@@ -1,0 +1,29 @@
+# requirements.txt - MVP Version
+
+# Deep Learning & Computer Vision
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+
+# Object Tracking
+supervision>=0.16.0
+lap>=0.4.0
+scipy>=1.10.0
+
+# OCR
+easyocr>=1.7.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Configuration
+pyyaml>=6.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Progress bars
+tqdm>=4.66.0

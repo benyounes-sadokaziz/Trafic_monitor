@@ -1,0 +1,45 @@
+# config/config.yaml
+
+# Model Configuration
+model:
+  name: "yolov8n.pt"  # Options: yolov8n, yolov8s, yolov8m, yolov8l
+  device: "auto"      # auto, cuda, cpu
+  confidence: 0.5
+  iou_threshold: 0.7
+  vehicle_classes: [2, 3, 4, 6, 8]  # bicycle, car, motorcycle, bus, truck
+
+# Tracking Configuration
+tracking:
+  max_age: 30           # Max frames to keep track without detection
+  min_hits: 3           # Min detections to start tracking
+  iou_threshold: 0.3    # IOU threshold for matching
+
+# Speed Estimation
+speed:
+  fps: 30               # Video frame rate
+  pixels_per_meter: 20  # Camera calibration (adjust per camera)
+  min_track_length: 10  # Min frames for speed calculation
+  speed_limit_kmh: 50   # Speed limit for violations
+
+# OCR Configuration
+ocr:
+  languages: ['en']
+  gpu: true
+  min_confidence: 0.5
+  detection_threshold: 0.7
+
+# Output Configuration
+output:
+  save_video: true
+  save_csv: true
+  draw_boxes: true
+  draw_tracks: true
+  draw_speed: true
+  draw_plates: true
+  output_dir: "data/output"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  save_logs: true
+  log_dir: "logs"

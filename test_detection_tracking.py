@@ -136,7 +136,7 @@ def test_detection_and_tracking(video_path):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("\nStopped by user")
             break
-    
+    track_history = tracker.get_track_history(7) 
     # Cleanup
     cap.release()
     out.release()
@@ -146,6 +146,7 @@ def test_detection_and_tracking(video_path):
     print("\n" + "="*70)
     print("RESULTS")
     print("="*70)
+    print(f"trucks: {track_history}")
     print(f"Processed frames: {frame_count}")
     print(f"Total detections: {total_detections}")
     print(f"Unique vehicle IDs tracked: {total_tracks}")

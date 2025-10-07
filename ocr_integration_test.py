@@ -1,6 +1,6 @@
 """
 Test VehicleDetector + ByteTrack Tracker + Plate Screenshot Pipeline
-Saves high-quality plate images instead of running OCR
+Saves high-quality plate images instead of runn    print("Step 7: Processing video...")OCR
 """
 
 import cv2
@@ -14,6 +14,8 @@ from detection.vehicle_detector import VehicleDetector
 from tracking.bytetrack_tracker import VehicleTracker
 from ocr.plate_detector import LicensePlateDetector
 from ocr.quality_assessor import PlateQualityAssessor
+from ocr.plate_screenshot_manager import PlateScreenshotManager
+
 
 
 def test_full_pipeline(video_path):
@@ -82,8 +84,19 @@ def test_full_pipeline(video_path):
     )
     print("✓ Quality assessor ready\n")
     
+    # Initialize screenshot manager
+    print("Step 5: Initializing screenshot manager...")
+    screenshot_manager = PlateScreenshotManager(
+        output_dir="data/output/plate_screenshots",
+        perfect_quality_threshold=0.95,
+        max_perfect_quality_shots=3,
+        min_quality_threshold=0.6,
+        verbose=True
+    )
+    print("✓ Screenshot manager ready\n")
+    
     # Open video
-    print("Step 5: Opening video...")
+    print("Step 6: Opening video...")
     cap = cv2.VideoCapture(video_path)
     
     if not cap.isOpened():
@@ -108,9 +121,9 @@ def test_full_pipeline(video_path):
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     # Track data storage
-    track_data = {}  # {track_id: {'screenshots': [], 'class': str, 'best_quality': float}}
+    track_data = {}  # {track_id: {'screenshots': [], 'class': str, 'best_quality': float, 'quality_threshold': float}}
     
-    print("Step 6: Processing video...")
+    print("Step 7: Processing video...")
     print("Press 'q' to stop\n")
     
     frame_count = 0
@@ -146,15 +159,6 @@ def test_full_pipeline(video_path):
                 bbox = track['bbox']
                 class_name = track['class']
                 
-                # Initialize track data
-                if track_id not in track_data:
-                    track_data[track_id] = {
-                        'screenshots': [],
-                        'class': class_name,
-                        'best_quality': 0.0,
-                        'best_screenshot': None
-                    }
-                
                 # Process every 3 frames to save GPU
                 if frame_count % 3 != 0:
                     continue
@@ -189,37 +193,20 @@ def test_full_pipeline(video_path):
                     # Assess quality
                     metrics = quality_assessor.assess(plate_crop)
                     
-                    # Save screenshot if quality is good
-                    if metrics.is_good_quality:
-                        # Create track-specific directory
-                        track_dir = output_dir / f"{class_name}_{track_id}"
-                        track_dir.mkdir(exist_ok=True)
-                        
-                        # Generate filename
-                        filename = f"frame_{frame_count:06d}_q{metrics.overall_score:.2f}.jpg"
-                        filepath = track_dir / filename
-                        
-                        # Save screenshot
-                        cv2.imwrite(str(filepath), plate_crop)
+                    # Save screenshot using screenshot manager
+                    was_saved, reason = screenshot_manager.save_if_better(
+                        track_id=track_id,
+                        class_name=class_name,
+                        plate_crop=plate_crop,
+                        quality_score=metrics.overall_score,
+                        frame_id=frame_count
+                    )
+                    
+                    if was_saved:
                         screenshots_saved += 1
-                        
-                        # Store info
-                        track_data[track_id]['screenshots'].append({
-                            'filepath': str(filepath),
-                            'quality': metrics.overall_score,
-                            'frame_id': frame_count
-                        })
-                        
-                        print(f"  Track {track_id} ({class_name}): Saved plate screenshot "
-                              f"(quality: {metrics.overall_score:.2f}, frame: {frame_count})")
-                        
-                        # Update best quality screenshot
-                        if metrics.overall_score > track_data[track_id]['best_quality']:
-                            track_data[track_id]['best_quality'] = metrics.overall_score
-                            track_data[track_id]['best_screenshot'] = str(filepath)
         
         # Draw results
-        output_frame = draw_tracks_with_info(frame.copy(), tracks, track_data)
+        output_frame = draw_tracks_with_info(frame.copy(), tracks, screenshot_manager)
         
         # Add info overlay
         info_text = [
@@ -258,7 +245,7 @@ def test_full_pipeline(video_path):
     out.release()
     cv2.destroyAllWindows()
     
-    # Final summary
+    # Final summary using screenshot manager
     print("\n" + "="*70)
     print("FINAL RESULTS")
     print("="*70)
@@ -266,28 +253,15 @@ def test_full_pipeline(video_path):
     print(f"Total detections: {total_detections}")
     print(f"Unique vehicle IDs tracked: {total_tracks}")
     print(f"Plate detections: {plate_detections}")
-    print(f"Screenshots saved: {screenshots_saved}")
-    print(f"\nPlate screenshots per track:")
-    print("-" * 70)
-    
-    for track_id, data in sorted(track_data.items()):
-        num_screenshots = len(data['screenshots'])
-        if num_screenshots > 0:
-            best_quality = data['best_quality']
-            print(f"  Track {track_id} ({data['class']}): {num_screenshots} screenshots "
-                  f"(best quality: {best_quality:.2f})")
-            print(f"    Best: {data['best_screenshot']}")
-    
-    print("-" * 70)
-    print(f"Total tracks with plates: {sum(1 for d in track_data.values() if d['screenshots'])}/{total_tracks}")
     print(f"Output video: {output_path}")
-    print(f"Screenshots directory: {output_dir}")
-    print("="*70 + "\n")
+    
+    # Get detailed screenshot statistics from screenshot manager
+    screenshot_manager.print_summary()
     
     return True
 
 
-def draw_tracks_with_info(frame, tracks, track_data):
+def draw_tracks_with_info(frame, tracks, screenshot_manager):
     """Draw tracked vehicles with IDs and plate detection status"""
     
     colors = {
@@ -310,15 +284,18 @@ def draw_tracks_with_info(frame, tracks, track_data):
         # Draw bounding box
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         
-        # Get plate info
+        # Get plate info from screenshot manager
         plate_info = ""
-        if track_id in track_data:
-            data = track_data[track_id]
-            num_screenshots = len(data['screenshots'])
-            if num_screenshots > 0:
-                plate_info = f" | {num_screenshots} plates"
-                if data['best_quality'] > 0:
-                    plate_info += f" (Q:{data['best_quality']:.2f})"
+        screenshots = screenshot_manager.get_track_screenshots(track_id)
+        if screenshots:
+            num_screenshots = len(screenshots)
+            plate_info = f" | {num_screenshots} plates"
+            
+            # Get best quality from screenshot manager data
+            if track_id in screenshot_manager.track_data:
+                best_quality = screenshot_manager.track_data[track_id]['best_quality']
+                if best_quality > 0:
+                    plate_info += f" (Q:{best_quality:.2f})"
         
         # Draw track ID and plate info
         id_text = f"ID:{track_id}{plate_info}"

@@ -1,0 +1,156 @@
+version: '3.8'
+
+services:
+  # Redis - Message Queue & Caching
+  redis:
+    image: redis:7-alpine
+    container_name: traffic_monitor_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - traffic_monitor_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # PostgreSQL - Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: traffic_monitor_db
+    environment:
+      POSTGRES_USER: traffic_user
+      POSTGRES_PASSWORD: traffic_pass
+      POSTGRES_DB: traffic_monitor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - traffic_monitor_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic_user"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # FastAPI Backend
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: traffic_monitor_api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://traffic_user:traffic_pass@postgres:5432/traffic_monitor
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../config:/app/config
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - traffic_monitor_network
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Celery Worker (for async video processing)
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: traffic_monitor_worker
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://traffic_user:traffic_pass@postgres:5432/traffic_monitor
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../config:/app/config
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - traffic_monitor_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: celery -A src.worker.celery_app worker --loglevel=info --concurrency=2
+
+  # Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: traffic_monitor_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - traffic_monitor_network
+    depends_on:
+      - api
+
+  # Grafana - Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: traffic_monitor_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - traffic_monitor_network
+    depends_on:
+      - prometheus
+
+  # MLflow - Model Registry & Tracking
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: traffic_monitor_mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://traffic_user:traffic_pass@postgres:5432/mlflow
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    networks:
+      - traffic_monitor_network
+    depends_on:
+      - postgres
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://traffic_user:traffic_pass@postgres:5432/mlflow --default-artifact-root /mlflow/artifacts
+
+networks:
+  traffic_monitor_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+  mlflow_data:

@@ -1,0 +1,4 @@
+./data
+/.env
+/models
+/test_api.py

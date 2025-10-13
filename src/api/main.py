@@ -1,0 +1,368 @@
+"""
+FastAPI Backend for Traffic Monitor
+Provides REST API endpoints for video processing
+"""
+
+import logging
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from pathlib import Path
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from config.settings import settings
+from src.api.schemas import (
+    JobResponse,
+    JobStatusResponse,
+    ProcessingStats
+)
+from src.api.websocket import websocket_endpoint, manager as ws_manager
+from src.monitoring.metrics import (
+    prometheus_metrics,
+    track_request,
+    track_processing_time
+)
+
+# Setup logging
+logging.basicConfig(
+    level=getattr(logging, settings.log_level),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Create FastAPI app
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="Traffic Monitoring System API - Vehicle Detection, Tracking, and Speed Estimation",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your frontend domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-memory job storage (will be replaced with Redis/Database)
+jobs_storage = {}
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize app on startup."""
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    logger.info(f"Environment: {'Development' if settings.debug else 'Production'}")
+    settings.ensure_directories()
+    logger.info("✅ Application started successfully")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    logger.info("Shutting down application...")
+
+
+@app.get("/")
+async def root():
+    """Root endpoint - API information."""
+    return {
+        "name": settings.app_name,
+        "version": settings.app_version,
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints": {
+            "docs": "/docs",
+            "health": "/health",
+            "process_video": "/api/process",
+            "job_status": "/api/jobs/{job_id}",
+            "websocket": "/ws/{job_id}"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring."""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "redis": "connected",  # TODO: Check Redis connection
+        "storage": "available"  # TODO: Check storage availability
+    }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+@app.post("/api/process", response_model=JobResponse)
+@track_request
+async def process_video(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    frame_width_meters: float = 50.0,
+    frame_height_meters: float = 30.0,
+    max_frames: Optional[int] = None,
+    save_output_video: bool = False
+):
+    """
+    Upload and process a video file.
+    
+    Args:
+        file: Video file to process (MP4, AVI, MOV)
+        frame_width_meters: Real-world width camera sees (for speed estimation)
+        frame_height_meters: Real-world height camera sees
+        max_frames: Maximum frames to process (None = all frames)
+        save_output_video: Whether to save annotated output video
+    
+    Returns:
+        JobResponse with job_id and status
+    """
+    logger.info(f"Received video upload: {file.filename}")
+    
+    # Validate file type
+    if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Supported: MP4, AVI, MOV"
+        )
+    
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())
+    
+    # Save uploaded file
+    input_path = settings.input_dir / f"{job_id}_{file.filename}"
+    
+    try:
+        with open(input_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        logger.info(f"Saved video to: {input_path}")
+        
+        # Create job entry
+        job_data = {
+            "job_id": job_id,
+            "filename": file.filename,
+            "status": "queued",
+            "created_at": datetime.now().isoformat(),
+            "video_path": str(input_path),
+            "frame_width_meters": frame_width_meters,
+            "frame_height_meters": frame_height_meters,
+            "max_frames": max_frames,
+            "save_output_video": save_output_video
+        }
+        
+        jobs_storage[job_id] = job_data
+        
+        # Add processing task to background
+        background_tasks.add_task(
+            process_video_task,
+            job_id=job_id,
+            video_path=input_path,
+            frame_width_meters=frame_width_meters,
+            frame_height_meters=frame_height_meters,
+            max_frames=max_frames,
+            save_output_video=save_output_video
+        )
+        
+        logger.info(f"✅ Job {job_id} queued for processing")
+        
+        return JobResponse(
+            job_id=job_id,
+            status="queued",
+            message="Video uploaded successfully and queued for processing",
+            created_at=datetime.now()
+        )
+    
+    except Exception as e:
+        logger.error(f"Error processing upload: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
+
+
+@app.get("/api/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str):
+    """
+    Get status and results of a processing job.
+    
+    Args:
+        job_id: Unique job identifier
+    
+    Returns:
+        JobStatusResponse with current status and statistics
+    """
+    if job_id not in jobs_storage:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    job_data = jobs_storage[job_id]
+    
+    return JobStatusResponse(
+        job_id=job_id,
+        status=job_data["status"],
+        created_at=job_data["created_at"],
+        progress=job_data.get("progress", 0.0),
+        stats=job_data.get("stats"),
+        error=job_data.get("error")
+    )
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str):
+    """
+    Delete a job and its associated files.
+    
+    Args:
+        job_id: Job identifier to delete
+    """
+    if job_id not in jobs_storage:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    job_data = jobs_storage[job_id]
+    
+    # Delete video file
+    video_path = Path(job_data["video_path"])
+    if video_path.exists():
+        video_path.unlink()
+    
+    # Delete output directory
+    output_dir = settings.output_dir / job_id
+    if output_dir.exists():
+        import shutil
+        shutil.rmtree(output_dir)
+    
+    # Remove from storage
+    del jobs_storage[job_id]
+    
+    logger.info(f"Deleted job {job_id}")
+    
+    return {"message": f"Job {job_id} deleted successfully"}
+
+
+@app.get("/api/jobs")
+async def list_jobs():
+    """List all jobs with their current status."""
+    return {
+        "total": len(jobs_storage),
+        "jobs": [
+            {
+                "job_id": job_id,
+                "filename": data["filename"],
+                "status": data["status"],
+                "created_at": data["created_at"],
+                "progress": data.get("progress", 0.0)
+            }
+            for job_id, data in jobs_storage.items()
+        ]
+    }
+
+
+# Background processing task
+@track_processing_time
+async def process_video_task(
+    job_id: str,
+    video_path: Path,
+    frame_width_meters: float,
+    frame_height_meters: float,
+    max_frames: Optional[int],
+    save_output_video: bool
+):
+    """
+    Background task to process video through pipeline.
+    
+    This runs asynchronously so the API returns immediately.
+    Progress updates are sent via WebSocket.
+    """
+    from src.pipeline.orchestrator import TrafficMonitorPipeline
+    
+    logger.info(f"Starting processing for job {job_id}")
+    
+    # Update job status
+    jobs_storage[job_id]["status"] = "processing"
+    jobs_storage[job_id]["started_at"] = datetime.now().isoformat()
+    
+    try:
+        # Initialize pipeline
+        pipeline = TrafficMonitorPipeline(
+            vehicle_model_path=str(settings.yolo_vehicle_model),
+            plate_model_path=str(settings.yolo_plate_model),
+            output_dir=str(settings.output_dir),
+            speed_output_dir=str(settings.output_dir / "speed_data"),
+            frame_width_meters=frame_width_meters,
+            frame_height_meters=frame_height_meters
+        )
+        
+        # Progress callback to update job storage
+        def progress_callback(job, frame_result, progress_percentage):
+            jobs_storage[job_id]["progress"] = progress_percentage
+            jobs_storage[job_id]["current_frame"] = frame_result.frame_number
+            
+            # Update stats
+            jobs_storage[job_id]["stats"] = ProcessingStats(
+                processed_frames=job.processed_frames,
+                total_frames=job.total_frames,
+                total_detections=job.total_detections,
+                total_tracks=job.total_tracks,
+                plate_detections=job.plate_detections,
+                screenshots_saved=job.screenshots_saved,
+                violations_count=job.violations_count
+            )
+        
+        # Process video
+        result = pipeline.process_video(
+            video_path=video_path,
+            job_id=job_id,
+            max_frames=max_frames,
+            progress_callback=progress_callback,
+            save_output_video=save_output_video
+        )
+        
+        # Update job with results
+        jobs_storage[job_id]["status"] = "completed"
+        jobs_storage[job_id]["completed_at"] = datetime.now().isoformat()
+        jobs_storage[job_id]["progress"] = 100.0
+        jobs_storage[job_id]["result"] = {
+            "processed_frames": result.processed_frames,
+            "total_tracks": result.total_tracks,
+            "plate_detections": result.plate_detections,
+            "screenshots_saved": result.screenshots_saved,
+            "violations_count": result.violations_count,
+            "speed_data_path": result.speed_data_path,
+            "duration_seconds": (result.end_time - result.start_time).total_seconds()
+        }
+        
+        logger.info(f"✅ Job {job_id} completed successfully")
+        prometheus_metrics.job_completed.inc()
+        
+    except Exception as e:
+        logger.error(f"❌ Job {job_id} failed: {e}", exc_info=True)
+        
+        jobs_storage[job_id]["status"] = "failed"
+        jobs_storage[job_id]["error"] = str(e)
+        jobs_storage[job_id]["failed_at"] = datetime.now().isoformat()
+        
+        prometheus_metrics.job_failed.inc()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    uvicorn.run(
+        "src.api.main:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.debug,
+        workers=1 if settings.debug else settings.api_workers
+    )

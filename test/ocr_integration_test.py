@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 from detection.vehicle_detector import VehicleDetector
 from tracking.bytetrack_tracker import VehicleTracker
 from ocr.plate_detector import LicensePlateDetector
-from ocr.quality_assessor import PlateQualityAssessor
+from image_quality.quality_assessor import PlateQualityAssessor
 from ocr.plate_screenshot_manager import PlateScreenshotManager
 from speed.speed_estimator import SpeedEstimator
 
@@ -424,6 +424,35 @@ def draw_tracks_with_info(frame, tracks, screenshot_manager, speed_estimator):
             cv2.circle(frame, (cx, cy), 4, color, -1)
     
     return frame
+
+
+if __name__ == "__main__":
+    # Video path
+    video_path = "data/input/test1.mp4"
+    
+    # Camera calibration (adjust these for your video!)
+    # These values represent the real-world area the camera sees
+    FRAME_WIDTH_METERS = 50.0   # Width of road/area in frame (meters)
+    FRAME_HEIGHT_METERS = 30.0  # Height of road/area in frame (meters)
+    
+    # Speed limits per vehicle class (km/h)
+    SPEED_LIMITS = {
+        'car': 120,
+        'truck': 90,
+        'bus': 90,
+        'motorcycle': 120,
+        'bicycle': 30
+    }
+    
+    # Run pipeline
+    success = test_full_pipeline(
+        video_path=video_path,
+        frame_width_meters=FRAME_WIDTH_METERS,
+        frame_height_meters=FRAME_HEIGHT_METERS,
+        speed_limits=SPEED_LIMITS
+    )
+    
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

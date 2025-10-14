@@ -53,11 +53,11 @@ class VehicleTracker:
 
     def __init__(
         self,
-        track_thresh: float = 0.5,
-        track_buffer: int = 30,
-        match_thresh: float = 0.8,
+        track_thresh: float = 0.4,
+        track_buffer: int = 90,
+        match_thresh: float = 0.7,
         frame_rate: int = 30,
-        max_history: int = 30,
+        max_history: int = 90,
         class_map: Optional[Dict[int, str]] = None,
         on_track_started: Optional[Callable[[int, Dict], None]] = None,
         on_track_updated: Optional[Callable[[int, Dict], None]] = None,

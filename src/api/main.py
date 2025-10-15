@@ -2,9 +2,11 @@
 FastAPI Backend for Traffic Monitor
 Provides REST API endpoints for video processing
 """
-
+import json
+import asyncio
 import logging
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, WebSocket
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from concurrent.futures import ThreadPoolExecutor
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pathlib import Path
@@ -268,7 +270,58 @@ async def list_jobs():
         ]
     }
 
+@app.websocket("/ws/{job_id}")
+async def websocket_route(websocket: WebSocket, job_id: str):
+    """WebSocket endpoint for real-time job updates."""
+    
+    # Accept connection immediately
+    await websocket.accept()
+    
+    try:
+        # Send welcome message
+        await websocket.send_json({
+            "type": "connected",
+            "job_id": job_id,
+            "message": "WebSocket connected successfully"
+        })
+        
+        logger.info(f"WebSocket connected: {job_id}")
+        
+        # Register connection with manager
+        if job_id not in ws_manager.active_connections:
+            ws_manager.active_connections[job_id] = set()
+        ws_manager.active_connections[job_id].add(websocket)
+        
+        # Keep connection alive
+        while True:
+            try:
+                # Wait for message or timeout
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=30.0
+                )
+                
+                # Handle client messages
+                import json
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    
+            except asyncio.TimeoutError:
+                # Send heartbeat
+                await websocket.send_json({"type": "heartbeat"})
+                
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        # Clean up connection
+        if job_id in ws_manager.active_connections:
+            ws_manager.active_connections[job_id].discard(websocket)
+            if not ws_manager.active_connections[job_id]:
+                del ws_manager.active_connections[job_id]
+        logger.info(f"WebSocket disconnected: {job_id}")
 
+# Background processing task
 # Background processing task
 @track_processing_time
 async def process_video_task(
@@ -279,81 +332,141 @@ async def process_video_task(
     max_frames: Optional[int],
     save_output_video: bool
 ):
-    """
-    Background task to process video through pipeline.
-    
-    This runs asynchronously so the API returns immediately.
-    Progress updates are sent via WebSocket.
-    """
+    """Background task to process video through pipeline."""
     from src.pipeline.orchestrator import TrafficMonitorPipeline
+    from src.api.websocket import manager as ws_manager
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
     
     logger.info(f"Starting processing for job {job_id}")
     
-    # Update job status
     jobs_storage[job_id]["status"] = "processing"
     jobs_storage[job_id]["started_at"] = datetime.now().isoformat()
     
-    try:
-        # Initialize pipeline
-        pipeline = TrafficMonitorPipeline(
-            vehicle_model_path=str(settings.yolo_vehicle_model),
-            plate_model_path=str(settings.yolo_plate_model),
-            output_dir=str(settings.output_dir),
-            speed_output_dir=str(settings.output_dir / "speed_data"),
-            frame_width_meters=frame_width_meters,
-            frame_height_meters=frame_height_meters
-        )
-        
-        # Progress callback to update job storage
-        def progress_callback(job, frame_result, progress_percentage):
-            jobs_storage[job_id]["progress"] = progress_percentage
-            jobs_storage[job_id]["current_frame"] = frame_result.frame_number
-            
-            # Update stats
-            jobs_storage[job_id]["stats"] = ProcessingStats(
-                processed_frames=job.processed_frames,
-                total_frames=job.total_frames,
-                total_detections=job.total_detections,
-                total_tracks=job.total_tracks,
-                plate_detections=job.plate_detections,
-                screenshots_saved=job.screenshots_saved,
-                violations_count=job.violations_count
+    # Create event loop for this thread
+    loop = asyncio.get_event_loop()
+    
+    def run_pipeline():
+        """Run pipeline in separate thread."""
+        try:
+            pipeline = TrafficMonitorPipeline(
+                vehicle_model_path=str(settings.yolo_vehicle_model),
+                plate_model_path=str(settings.yolo_plate_model),
+                output_dir=str(settings.output_dir),
+                speed_output_dir=str(settings.output_dir / "speed_data"),
+                frame_width_meters=frame_width_meters,
+                frame_height_meters=frame_height_meters
             )
-        
-        # Process video
-        result = pipeline.process_video(
-            video_path=video_path,
-            job_id=job_id,
-            max_frames=max_frames,
-            progress_callback=progress_callback,
-            save_output_video=save_output_video
-        )
-        
-        # Update job with results
-        jobs_storage[job_id]["status"] = "completed"
-        jobs_storage[job_id]["completed_at"] = datetime.now().isoformat()
-        jobs_storage[job_id]["progress"] = 100.0
-        jobs_storage[job_id]["result"] = {
-            "processed_frames": result.processed_frames,
-            "total_tracks": result.total_tracks,
-            "plate_detections": result.plate_detections,
-            "screenshots_saved": result.screenshots_saved,
-            "violations_count": result.violations_count,
-            "speed_data_path": result.speed_data_path,
-            "duration_seconds": (result.end_time - result.start_time).total_seconds()
-        }
-        
-        logger.info(f"✅ Job {job_id} completed successfully")
-        prometheus_metrics.job_completed.inc()
-        
-    except Exception as e:
-        logger.error(f"❌ Job {job_id} failed: {e}", exc_info=True)
-        
-        jobs_storage[job_id]["status"] = "failed"
-        jobs_storage[job_id]["error"] = str(e)
-        jobs_storage[job_id]["failed_at"] = datetime.now().isoformat()
-        
-        prometheus_metrics.job_failed.inc()
+            
+            # Progress callback with WebSocket support
+            def progress_callback(job, frame_result, progress_percentage):
+                # Update job storage (thread-safe)
+                jobs_storage[job_id]["progress"] = progress_percentage
+                jobs_storage[job_id]["current_frame"] = frame_result.frame_number
+                
+                # Update stats
+                jobs_storage[job_id]["stats"] = {
+                    "processed_frames": job.processed_frames,
+                    "total_frames": job.total_frames,
+                    "total_detections": job.total_detections,
+                    "total_tracks": job.total_tracks,
+                    "plate_detections": job.plate_detections,
+                    "screenshots_saved": job.screenshots_saved,
+                    "violations_count": job.violations_count
+                }
+                
+                # Send WebSocket update (schedule in main loop)
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        ws_manager.broadcast_frame_update(
+                            job_id=job_id,
+                            frame_number=frame_result.frame_number,
+                            progress=progress_percentage,
+                            tracks=[
+                                {
+                                    "track_id": t["track_id"],
+                                    "class": t["class"],
+                                    "bbox": t["bbox"],
+                                    "confidence": t.get("confidence", 0.0)
+                                }
+                                for t in frame_result.tracks
+                            ],
+                            stats={
+                                "detections": frame_result.detections_count,
+                                "tracked": frame_result.tracked_count,
+                                "plates": frame_result.plate_detections,
+                                "violations": frame_result.violations_count
+                            }
+                        ),
+                        loop
+                    )
+                except Exception as e:
+                    logger.warning(f"WebSocket broadcast failed: {e}")
+            
+            # Process video (this blocks, but in separate thread!)
+            result = pipeline.process_video(
+                video_path=video_path,
+                job_id=job_id,
+                max_frames=max_frames,
+                progress_callback=progress_callback,
+                save_output_video=save_output_video
+            )
+            
+            # Job completed
+            jobs_storage[job_id]["status"] = "completed"
+            jobs_storage[job_id]["completed_at"] = datetime.now().isoformat()
+            jobs_storage[job_id]["progress"] = 100.0
+            jobs_storage[job_id]["result"] = {
+                "processed_frames": result.processed_frames,
+                "total_tracks": result.total_tracks,
+                "plate_detections": result.plate_detections,
+                "screenshots_saved": result.screenshots_saved,
+                "violations_count": result.violations_count,
+                "speed_data_path": result.speed_data_path,
+                "duration_seconds": (result.end_time - result.start_time).total_seconds()
+            }
+            
+            # Send completion message via WebSocket
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.broadcast_status_update(
+                        job_id=job_id,
+                        status="completed",
+                        message="Video processing completed successfully!"
+                    ),
+                    loop
+                )
+            except Exception as e:
+                logger.warning(f"WebSocket completion broadcast failed: {e}")
+            
+            logger.info(f"✅ Job {job_id} completed successfully")
+            prometheus_metrics.job_completed.inc()
+            
+        except Exception as e:
+            logger.error(f"❌ Job {job_id} failed: {e}", exc_info=True)
+            
+            jobs_storage[job_id]["status"] = "failed"
+            jobs_storage[job_id]["error"] = str(e)
+            jobs_storage[job_id]["failed_at"] = datetime.now().isoformat()
+            
+            # Send error via WebSocket
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.broadcast_status_update(
+                        job_id=job_id,
+                        status="failed",
+                        message=f"Processing failed: {str(e)}"
+                    ),
+                    loop
+                )
+            except Exception as e:
+                logger.warning(f"WebSocket error broadcast failed: {e}")
+            
+            prometheus_metrics.job_failed.inc()
+    
+    # Run pipeline in thread pool (non-blocking!)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await loop.run_in_executor(executor, run_pipeline)
 
 
 if __name__ == "__main__":

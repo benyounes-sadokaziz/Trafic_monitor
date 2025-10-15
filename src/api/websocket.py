@@ -122,21 +122,10 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     
     Usage:
         ws://localhost:8000/ws/{job_id}
-    
-    Messages sent to client:
-        - frame_update: Real-time processing progress
-        - status_update: Job status changes
-        - heartbeat: Keep-alive messages
-    
     """
-
-    try:
-        await manager.connect(websocket, job_id)
-    except Exception as e:
-        logger.error(f"WebSocket connection error for job {job_id}: {e}")
-        await websocket.close()
-        return
-
+    # Accept connection FIRST (don't validate job yet)
+    await manager.connect(websocket, job_id)
+    
     try:
         # Send initial connection confirmation
         await websocket.send_json({

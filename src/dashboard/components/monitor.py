@@ -176,8 +176,8 @@ def display_progress(status_data: Dict[str, Any]):
         )
     
     # Calculate time estimates if processing
-    if status_data['status'] == 'processing' and 'stats' in status_data:
-        stats = status_data['stats']
+    if status_data['status'] == 'processing' :
+        stats = status_data.get('stats') or {}
         processed = stats.get('processed_frames', 0)
         total = stats.get('total_frames', 1)
         
@@ -288,7 +288,7 @@ def display_processing_metrics(status_data: Dict[str, Any]):
     
     st.markdown("### ⚡ Performance Metrics")
     
-    stats = status_data['stats']
+    stats = status_data.get('stats') or {}
     processed = stats.get('processed_frames', 0)
     
     if 'monitor_start_time' in st.session_state and processed > 0:

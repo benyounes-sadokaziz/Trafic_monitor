@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import plotly.graph_objects as go
 from utils.api_client import APIClient
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def render_monitor_section(api_base_url: str):
@@ -87,8 +91,9 @@ def render_monitor_section(api_base_url: str):
     
     # Display status
     display_job_status(status_data)
-
+ 
     if status_data and status_data['status'] == 'processing':
+        # Live video section handles its own WS client and queue safely (no Streamlit in background threads)
         st.markdown("---")
         from components.live_video import render_live_video_section
         render_live_video_section(job_id, api_base_url.replace('http', 'ws'))
@@ -421,3 +426,6 @@ def create_progress_gauge(progress: float) -> go.Figure:
     )
     
     return fig
+
+
+    # Removed legacy start_websocket_listener which updated Streamlit from background thread

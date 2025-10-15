@@ -70,7 +70,9 @@ class ConnectionManager:
         frame_number: int,
         progress: float,
         tracks: list,
-        stats: dict
+        stats: dict,
+        frame_base64: str = None,
+        
     ):
         """Broadcast frame processing update."""
         message = {
@@ -80,8 +82,12 @@ class ConnectionManager:
             "progress": progress,
             "tracks": tracks,
             "stats": stats,
-            "timestamp": asyncio.get_event_loop().time()
+            "timestamp": asyncio.get_event_loop().time(),
+            "frame": frame_base64
         }
+        # Include frame image only if provided to reduce bandwidth when not needed
+        if frame_base64 is not None:
+            message["frame_base64"] = frame_base64
         
         await self.send_message(job_id, message)
     

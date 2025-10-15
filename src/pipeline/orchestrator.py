@@ -6,10 +6,12 @@ Adapted from your working test pipeline for async processing
 import cv2
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Callable, Generator
+from typing import Dict, List, Optional, Callable, Generator, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+
+# from shapely import buffer  # Removed: not used and may conflict with local variable names
 
 # Your existing imports
 from src.detection.vehicle_detector import VehicleDetector
@@ -35,6 +37,9 @@ class FrameResult:
     violations_count: int
     tracks: List[Dict] = field(default_factory=list)
     violations: List[Dict] = field(default_factory=list)
+    # Optional annotated frame for live preview (not persisted)
+    last_frame: Optional[Any] = None
+    frame_data: Optional[bytes] = None  # ← ADD THIS
 
 
 @dataclass
@@ -282,19 +287,24 @@ class TrafficMonitorPipeline:
                 job.violations_count = frame_result.violations_count
                 job.frame_results.append(frame_result)
                 
+                # Prepare annotated frame for live preview (downstream WS encoding)
+                annotated_frame = self._draw_frame(
+                    frame.copy(),
+                    frame_result,
+                    screenshot_manager,
+                    speed_estimator
+                )
+                frame_result.last_frame = annotated_frame
+
                 # Call progress callback (for WebSocket streaming)
                 if progress_callback:
                     progress_percentage = (frame_count / max_frames_to_process) * 100
                     progress_callback(job, frame_result, progress_percentage)
+                # Clear heavy data after callback to free memory
+                frame_result.last_frame = None
                 
                 # Save output frame if requested
                 if out:
-                    annotated_frame = self._draw_frame(
-                        frame.copy(),
-                        frame_result,
-                        screenshot_manager,
-                        speed_estimator
-                    )
                     out.write(annotated_frame)
                 
                 # Log progress
@@ -524,6 +534,7 @@ class TrafficMonitorPipeline:
                     
                     if was_saved:
                         screenshots_saved_count += 1
+
         
         # Get violations
         violations = speed_estimator.get_violations()
@@ -541,6 +552,17 @@ class TrafficMonitorPipeline:
             tracks=tracks,
             violations=violations
         )
+        
+        # Draw annotated frame and JPEG-encode for lightweight transport
+        annotated_frame = self._draw_frame(
+            frame.copy(),
+            result,
+            screenshot_manager,
+            speed_estimator
+        )
+        success, buf = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if success:
+            result.frame_data = buf.tobytes()
         
         return result
     

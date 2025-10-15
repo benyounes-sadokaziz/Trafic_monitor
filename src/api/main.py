@@ -374,9 +374,73 @@ async def process_video_task(
                     "screenshots_saved": job.screenshots_saved,
                     "violations_count": job.violations_count
                 }
+
                 
+                if frame_result.frame_number % 3 == 0:
+                    try:
+                        import base64
+                        
+                        # Encode frame as base64 if available
+                        frame_base64 = None
+                        if hasattr(frame_result, 'frame_data') and frame_result.frame_data:
+                            frame_base64 = base64.b64encode(frame_result.frame_data).decode('utf-8')
+                        
+                        asyncio.run_coroutine_threadsafe(
+                            ws_manager.broadcast_frame_update(
+                                job_id=job_id,
+                                frame_number=frame_result.frame_number,
+                                progress=progress_percentage,
+                                tracks=[
+                                    {
+                                        "track_id": t["track_id"],
+                                        "class": t["class"],
+                                        "bbox": t["bbox"],
+                                        "confidence": t.get("confidence", 0.0)
+                                    }
+                                    for t in frame_result.tracks
+                                ],
+                                stats={
+                                    "detections": frame_result.detections_count,
+                                    "tracked": frame_result.tracked_count,
+                                    "plates": frame_result.plate_detections,
+                                    "violations": frame_result.violations_count
+                                },
+                                frame_base64=frame_base64  # ← ADD FRAME DATA
+                            ),
+                            loop
+                        )
+                    except Exception as e:
+                        logger.warning(f"WebSocket broadcast failed: {e}")
                 # Send WebSocket update (schedule in main loop)
                 try:
+                    # Optionally include an annotated, downscaled frame in base64 to display in dashboard
+                    frame_b64 = None
+                    try:
+                        # Import here to avoid global dependency if not used elsewhere
+                        import cv2
+                        import base64
+                        import numpy as np
+                        # We will draw on a copy and downscale to reduce bandwidth
+                        if "last_frame" in frame_result.__dict__ and frame_result.last_frame is not None:
+                            annotated = frame_result.last_frame.copy()
+                        else:
+                            annotated = None
+                        # If annotated frame not provided by frame_result, skip image streaming
+                        if annotated is not None:
+                            # Downscale to width ~640 while keeping aspect ratio
+                            h, w = annotated.shape[:2]
+                            target_w = 640
+                            if w > target_w:
+                                scale = target_w / float(w)
+                                annotated = cv2.resize(annotated, (target_w, int(h * scale)))
+                            # Encode JPEG
+                            success, buf = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                            if success:
+                                frame_b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+                    except Exception as _img_e:
+                        frame_b64 = None
+                        # Do not fail WS on image issues; image is optional
+
                     asyncio.run_coroutine_threadsafe(
                         ws_manager.broadcast_frame_update(
                             job_id=job_id,
@@ -396,7 +460,8 @@ async def process_video_task(
                                 "tracked": frame_result.tracked_count,
                                 "plates": frame_result.plate_detections,
                                 "violations": frame_result.violations_count
-                            }
+                            },
+                            frame_base64=frame_b64,
                         ),
                         loop
                     )

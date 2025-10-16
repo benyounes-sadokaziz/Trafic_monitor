@@ -23,8 +23,8 @@ from speed.speed_estimator import SpeedEstimator
 
 def test_full_pipeline(
     video_path,
-    frame_width_meters=50.0,
-    frame_height_meters=30.0,
+    frame_width_meters=400.0,
+    frame_height_meters=600.0,
     speed_limits=None
 ):
     """
@@ -45,7 +45,7 @@ def test_full_pipeline(
     # Default speed limits if not provided
     if speed_limits is None:
         speed_limits = {
-            'car': 120,
+            'car': 60,
             'truck': 90,
             'bus': 90,
             'motorcycle': 120,
@@ -437,7 +437,7 @@ if __name__ == "__main__":
     
     # Speed limits per vehicle class (km/h)
     SPEED_LIMITS = {
-        'car': 120,
+        'car': 60,
         'truck': 90,
         'bus': 90,
         'motorcycle': 120,
@@ -455,30 +455,3 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 
 
-if __name__ == "__main__":
-    # Video path
-    video_path = "data/input/test1.mp4"
-    
-    # Camera calibration (adjust these for your video!)
-    # These values represent the real-world area the camera sees
-    FRAME_WIDTH_METERS = 50.0   # Width of road/area in frame (meters)
-    FRAME_HEIGHT_METERS = 30.0  # Height of road/area in frame (meters)
-    
-    # Speed limits per vehicle class (km/h)
-    SPEED_LIMITS = {
-        'car': 120,
-        'truck': 90,
-        'bus': 90,
-        'motorcycle': 120,
-        'bicycle': 30
-    }
-    
-    # Run pipeline
-    success = test_full_pipeline(
-        video_path=video_path,
-        frame_width_meters=FRAME_WIDTH_METERS,
-        frame_height_meters=FRAME_HEIGHT_METERS,
-        speed_limits=SPEED_LIMITS
-    )
-    
-    sys.exit(0 if success else 1)

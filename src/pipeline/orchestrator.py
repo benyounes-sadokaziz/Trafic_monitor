@@ -539,6 +539,22 @@ class TrafficMonitorPipeline:
         
         # Get violations (speed estimator continues tracking even after violations)
         violations = speed_estimator.get_violations()
+        violating_ids = {v['track_id'] for v in violations}
+        
+        # Enrich track records with current speed, violation flag, and best screenshot path
+        for t in tracks:
+            tid = t.get('track_id')
+            try:
+                t['speed'] = speed_estimator.get_current_speed(tid)
+            except Exception:
+                t['speed'] = None
+            t['is_violation'] = bool(tid in violating_ids)
+            # Best plate screenshot if available
+            try:
+                best_path = screenshot_manager.get_best_screenshot(tid)
+            except Exception:
+                best_path = None
+            t['plate_screenshot'] = best_path
         
         # Create result
         result = FrameResult(

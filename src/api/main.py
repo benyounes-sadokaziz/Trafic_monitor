@@ -221,6 +221,66 @@ async def get_job_status(job_id: str):
     )
 
 
+@app.get("/api/jobs/{job_id}/tracks")
+async def get_job_tracks(job_id: str):
+    """Return the latest known tracks with speed/violation/screenshot info."""
+    if job_id not in jobs_storage:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    job = jobs_storage[job_id]
+    # Prefer cumulative tracks if available, else fall back to latest snapshot
+    if "all_tracks" in job and isinstance(job["all_tracks"], dict):
+        tracks = list(job["all_tracks"].values())
+    else:
+        tracks = job.get("latest_tracks", [])
+
+    # Fallback: if a track has no plate_screenshot yet, scan the screenshots folder
+    # Structure: settings.output_dir / job_id / f"{class}_{track_id}" / files like frame_XXXXXX_q0.95.jpg
+    try:
+        from pathlib import Path
+        import re
+        import base64 as _b64
+        root = Path(settings.output_dir) / job_id
+        for t in tracks:
+            if t.get("plate_screenshot"):
+                continue
+            cls = t.get("class")
+            tid = t.get("track_id")
+            if cls is None or tid is None:
+                continue
+            track_dir = root / f"{cls}_{tid}"
+            if not track_dir.exists() or not track_dir.is_dir():
+                continue
+            best_file = None
+            best_q = -1.0
+            for img in track_dir.glob("*.jpg"):
+                m = re.search(r"_q([0-9]+\.[0-9]+)\.jpg$", img.name)
+                if not m:
+                    continue
+                q = float(m.group(1))
+                if q > best_q:
+                    best_q = q
+                    best_file = img
+            if best_file is not None:
+                try:
+                    with open(best_file, "rb") as _f:
+                        data_url = "data:image/jpeg;base64," + _b64.b64encode(_f.read()).decode("ascii")
+                    t["plate_screenshot"] = data_url
+                    if "all_tracks" in job and isinstance(job["all_tracks"], dict) and tid in job["all_tracks"]:
+                        job["all_tracks"][tid]["plate_screenshot"] = data_url
+                except Exception:
+                    pass
+    except Exception as _e:
+        # Non-fatal: if scan fails, we just return what we have
+        pass
+    # Ensure appearance fields exist in each track for UI formatting
+    for t in tracks:
+        t.setdefault("first_frame", None)
+        t.setdefault("first_ts", None)
+        t.setdefault("last_frame", None)
+        t.setdefault("last_ts", None)
+    return {"tracks": tracks}
+
+
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str):
     """
@@ -378,6 +438,84 @@ async def process_video_task(
                     "screenshots_saved": job.screenshots_saved,
                     "violations_count": job.violations_count
                 }
+                # Store a lightweight snapshot of tracks for REST retrieval
+                try:
+                    latest = []
+                    from pathlib import Path as _Path
+                    import base64 as _b64
+                    for t in frame_result.tracks:
+                        shot = t.get("plate_screenshot")
+                        shot_data = None
+                        if isinstance(shot, str) and _Path(shot).exists():
+                            try:
+                                with open(shot, "rb") as _f:
+                                    shot_data = "data:image/jpeg;base64," + _b64.b64encode(_f.read()).decode("ascii")
+                            except Exception:
+                                shot_data = None
+                        latest.append({
+                            "track_id": t.get("track_id"),
+                            "class": t.get("class"),
+                            "speed": t.get("speed"),
+                            "is_violation": t.get("is_violation", False),
+                            "plate_screenshot": shot_data,
+                            # For latest snapshot, last appearance is the current frame; first unknown here
+                            "last_frame": frame_result.frame_number,
+                            "last_ts": frame_result.timestamp
+                        })
+                    jobs_storage[job_id]["latest_tracks"] = latest
+                except Exception:
+                    pass
+
+                # Maintain cumulative tracks so rows persist once a vehicle appears
+                try:
+                    all_tracks = jobs_storage[job_id].setdefault("all_tracks", {})
+                    for t in frame_result.tracks:
+                        tid = t.get("track_id")
+                        if tid is None:
+                            continue
+                        existing = all_tracks.get(tid, {})
+                        # Convert screenshot file path to data URL if possible
+                        shot = t.get("plate_screenshot")
+                        shot_data = existing.get("plate_screenshot")
+                        if isinstance(shot, str):
+                            from pathlib import Path as _Path
+                            import base64 as _b64
+                            p = _Path(shot)
+                            if p.exists():
+                                try:
+                                    with open(p, "rb") as _f:
+                                        shot_data = "data:image/jpeg;base64," + _b64.b64encode(_f.read()).decode("ascii")
+                                except Exception:
+                                    pass
+                        # Initialize first appearance if not already set
+                        first_frame = existing.get("first_frame")
+                        first_ts = existing.get("first_ts")
+                        if first_frame is None:
+                            first_frame = frame_result.frame_number
+                        if first_ts is None:
+                            first_ts = frame_result.timestamp
+
+                        # Always update last appearance to current
+                        last_frame = frame_result.frame_number
+                        last_ts = frame_result.timestamp
+
+                        all_tracks[tid] = {
+                            "track_id": tid,
+                            # Keep class once set; update if previously unknown
+                            "class": existing.get("class", t.get("class")),
+                            # Always update latest speed and violation state
+                            "speed": t.get("speed"),
+                            "is_violation": t.get("is_violation", False),
+                            # Prefer the newest non-null screenshot data URL, else keep existing
+                            "plate_screenshot": shot_data,
+                            # Appearance tracking
+                            "first_frame": first_frame,
+                            "first_ts": first_ts,
+                            "last_frame": last_frame,
+                            "last_ts": last_ts
+                        }
+                except Exception:
+                    pass
 
                 
                 if frame_result.frame_number % 3 == 0:

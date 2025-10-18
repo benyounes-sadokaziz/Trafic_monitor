@@ -69,7 +69,7 @@ def render_monitor_section(api_base_url: str):
         st.caption(f"Job ID: `{job_id}`")
     
     with col2:
-        if st.button("🔄 Refresh Now", use_container_width=True):
+        if st.button("🔄 Refresh Now", width='stretch):
             st.rerun()
         
         auto_refresh = st.toggle("Auto-refresh", value=True)
@@ -112,6 +112,9 @@ def render_monitor_section(api_base_url: str):
     # Display charts
     if status_data.get('stats'):
         display_charts(status_data)
+
+    # Vehicles table (ID, type, screenshot, violation, speed)
+    render_vehicle_table(api_client, job_id)
     
     # Auto-refresh logic
     if auto_refresh and status_data['status'] == 'processing':
@@ -126,6 +129,79 @@ def render_monitor_section(api_base_url: str):
         # Clear auto-refresh when done
         if 'monitor_start_time' in st.session_state:
             del st.session_state['monitor_start_time']
+
+
+def _format_mmss(ts: Any, frame: Any = None) -> str:
+    """Format seconds float to mm:ss; fallback to frame number if no ts."""
+    try:
+        if ts is not None:
+            seconds = int(float(ts))
+            minutes = seconds // 60
+            rem = seconds % 60
+            return f"{minutes:02d}:{rem:02d}"
+        if frame is not None:
+            return f"f{int(frame)}"
+    except Exception:
+        pass
+    return "-"
+
+
+def render_vehicle_table(api_client: APIClient, job_id: str):
+    """Render a table of vehicles with plate screenshot, speed, and appearance times."""
+    st.markdown("### 🚘 Vehicles")
+    data = api_client.get_job_tracks(job_id)
+    rows = []
+    if data and 'tracks' in data:
+        for t in data['tracks']:
+            vid = t.get('track_id')
+            vtype = t.get('class', 'unknown')
+            speed = t.get('speed')
+            viol = t.get('is_violation', False)
+            shot = t.get('plate_screenshot')
+            first_ts = t.get('first_ts')
+            last_ts = t.get('last_ts')
+            first_frame = t.get('first_frame')
+            last_frame = t.get('last_frame')
+            rows.append({
+                'vehicule_id': vid,
+                'vehicule_type': vtype,
+                'plate_screenshot': shot,
+                'violation': viol,
+                'speed': None if speed is None else f"{speed:.0f} km/h",
+                'first_appearence': _format_mmss(first_ts, first_frame),
+                'last_appearence': _format_mmss(last_ts, last_frame)
+            })
+    if not rows:
+        st.info("No track data yet. This updates as processing progresses.")
+        return
+    
+    # Build display columns
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    # Render table with thumbnails using st.column_config
+    from pathlib import Path
+    # Convert relative or absolute paths to URLs or file paths Streamlit can show
+    # We can use st.dataframe with column config for images if file path is provided
+    st.dataframe(
+        df,
+        width='stretch,
+        column_config={
+            'plate_screenshot': st.column_config.ImageColumn(
+                label='plate_screenshot',
+                width="small"
+            ),
+            'violation': st.column_config.CheckboxColumn(
+                label='violation'
+            ),
+            'first_appearence': st.column_config.TextColumn(
+                label='first_appearence'
+            ),
+            'last_appearence': st.column_config.TextColumn(
+                label='last_appearence'
+            ),
+        },
+        hide_index=True
+    )
 
 
 def display_job_status(status_data: Dict[str, Any]):
@@ -355,12 +431,12 @@ def display_charts(status_data: Dict[str, Any]):
     with col1:
         # Detection breakdown pie chart
         fig_pie = create_detection_breakdown_chart(stats)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width='stretch)
     
     with col2:
         # Processing progress gauge
         fig_gauge = create_progress_gauge(status_data.get('progress', 0))
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width='stretch)
 
 
 def create_detection_breakdown_chart(stats: Dict[str, Any]) -> go.Figure:

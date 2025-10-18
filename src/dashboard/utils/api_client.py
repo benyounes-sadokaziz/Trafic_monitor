@@ -76,3 +76,15 @@ class APIClient:
             return True
         except requests.exceptions.RequestException:
             return False
+
+    def get_job_tracks(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch latest tracks for a job (with speed/violation/screenshot)."""
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/jobs/{job_id}/tracks",
+                timeout=5
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None

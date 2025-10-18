@@ -5,7 +5,7 @@ Provides REST API endpoints for video processing
 import json
 import asyncio
 import logging
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, Form
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -115,10 +115,10 @@ async def metrics():
 async def process_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    frame_width_meters: float = 50.0,
-    frame_height_meters: float = 30.0,
-    max_frames: Optional[int] = None,
-    save_output_video: bool = False
+    frame_width_meters: float = Form(50.0),
+    frame_height_meters: float = Form(30.0),
+    max_frames: Optional[int] = Form(None),
+    save_output_video: bool = Form(False)
 ):
     """
     Upload and process a video file.
@@ -338,7 +338,11 @@ async def process_video_task(
     from concurrent.futures import ThreadPoolExecutor
     import threading
     
-    logger.info(f"Starting processing for job {job_id}")
+    logger.info(
+        f"Starting processing for job {job_id} | "
+        f"calibration: width={frame_width_meters}m, height={frame_height_meters}m | "
+        f"max_frames={max_frames} | save_output_video={save_output_video}"
+    )
     
     jobs_storage[job_id]["status"] = "processing"
     jobs_storage[job_id]["started_at"] = datetime.now().isoformat()

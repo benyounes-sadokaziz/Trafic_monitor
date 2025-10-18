@@ -1,6 +1,8 @@
 """
-Production-Ready Traffic Monitor Pipeline
-Adapted from your working test pipeline for async processing
+Production-Ready Traffic Monitor Pipeline - Enhanced Version
+Key improvements:
+1. Skip screenshot detection if track already has sufficient quality screenshots
+2. Continue tracking speed even after violations are detected
 """
 
 import cv2
@@ -11,9 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 
-# from shapely import buffer  # Removed: not used and may conflict with local variable names
-
-# Your existing imports
 from src.detection.vehicle_detector import VehicleDetector
 from src.tracking.bytetrack_tracker import VehicleTracker
 from src.ocr.plate_detector import LicensePlateDetector
@@ -37,9 +36,8 @@ class FrameResult:
     violations_count: int
     tracks: List[Dict] = field(default_factory=list)
     violations: List[Dict] = field(default_factory=list)
-    # Optional annotated frame for live preview (not persisted)
     last_frame: Optional[Any] = None
-    frame_data: Optional[bytes] = None  # ← ADD THIS
+    frame_data: Optional[bytes] = None
 
 
 @dataclass
@@ -49,9 +47,8 @@ class ProcessingJob:
     video_path: Path
     start_time: datetime = field(default_factory=datetime.now)
     end_time: Optional[datetime] = None
-    status: str = "pending"  # pending, processing, completed, failed
+    status: str = "pending"
     
-    # Video info
     fps: int = 0
     width: int = 0
     height: int = 0
@@ -59,14 +56,12 @@ class ProcessingJob:
     processed_frames: int = 0
     duration_seconds: float = 0.0
     
-    # Processing stats
     total_detections: int = 0
     total_tracks: int = 0
     plate_detections: int = 0
     screenshots_saved: int = 0
     violations_count: int = 0
     
-    # Results
     frame_results: List[FrameResult] = field(default_factory=list)
     speed_data_path: Optional[str] = None
     error: Optional[str] = None
@@ -74,13 +69,9 @@ class ProcessingJob:
 
 class TrafficMonitorPipeline:
     """
-    Production-ready traffic monitoring pipeline.
-    
-    This wraps your existing modules with production features:
-    - Progress callbacks for real-time updates
-    - Streaming results for WebSocket
-    - Database integration hooks
-    - Error handling and recovery
+    Production-ready traffic monitoring pipeline with enhanced features:
+    - Smart screenshot optimization (skip if already have quality shots)
+    - Continuous speed tracking even after violations
     """
     
     def __init__(
@@ -95,23 +86,17 @@ class TrafficMonitorPipeline:
         vehicle_confidence: float = 0.5,
         plate_confidence: float = 0.5,
         quality_threshold: float = 0.6,
-        device: str = "cuda"
+        device: str = "cuda",
+        # NEW: Control screenshot optimization
+        skip_screenshot_threshold: float = 0.90,  # Skip if we have shots above this quality
+        min_screenshots_before_skip: int = 2      # Need at least this many good shots before skipping
     ):
         """
         Initialize pipeline with all components.
         
         Args:
-            vehicle_model_path: Path to vehicle detection model
-            plate_model_path: Path to plate detection model
-            output_dir: Directory for plate screenshots
-            speed_output_dir: Directory for speed data exports
-            frame_width_meters: Real-world width camera sees
-            frame_height_meters: Real-world height camera sees
-            speed_limits: Speed limits per vehicle class (km/h)
-            vehicle_confidence: Confidence threshold for vehicles
-            plate_confidence: Confidence threshold for plates
-            quality_threshold: Minimum quality for plate screenshots
-            device: Device for inference (cuda/cpu)
+            skip_screenshot_threshold: Quality threshold - skip detection if track has shots above this
+            min_screenshots_before_skip: Minimum number of quality shots needed before skipping
         """
         logger.info("Initializing Traffic Monitor Pipeline...")
         
@@ -119,6 +104,10 @@ class TrafficMonitorPipeline:
         self.speed_output_dir = Path(speed_output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.speed_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Screenshot optimization settings
+        self.skip_screenshot_threshold = skip_screenshot_threshold
+        self.min_screenshots_before_skip = min_screenshots_before_skip
         
         # Camera calibration
         self.frame_width_meters = frame_width_meters
@@ -173,6 +162,46 @@ class TrafficMonitorPipeline:
         
         logger.info("✅ Pipeline initialized successfully")
     
+    def _should_process_screenshot(
+        self, 
+        track_id: int, 
+        screenshot_manager: PlateScreenshotManager
+    ) -> bool:
+        """
+        ENHANCEMENT 1: Check if we should skip screenshot detection for this track.
+        
+        Skip if the track already has sufficient high-quality screenshots.
+        This saves computational resources on plate detection and OCR.
+        
+        Args:
+            track_id: Vehicle track ID
+            screenshot_manager: Manager containing existing screenshots
+            
+        Returns:
+            True if we should process screenshots, False if we should skip
+        """
+        # Get existing screenshots for this track
+        screenshots = screenshot_manager.get_track_screenshots(track_id)
+        
+        if not screenshots:
+            return True  # No screenshots yet, definitely process
+        
+        # Check if we have enough high-quality shots
+        high_quality_shots = [
+            shot for shot in screenshots 
+            if shot.get('quality_score', 0) >= self.skip_screenshot_threshold
+        ]
+        
+        if len(high_quality_shots) >= self.min_screenshots_before_skip:
+            # We already have enough high-quality screenshots, skip detection
+            logger.debug(
+                f"Track {track_id}: Skipping screenshot - already have "
+                f"{len(high_quality_shots)} shots above quality {self.skip_screenshot_threshold}"
+            )
+            return False
+        
+        return True  # Still need more/better shots
+    
     def process_video(
         self,
         video_path: Path,
@@ -181,26 +210,13 @@ class TrafficMonitorPipeline:
         progress_callback: Optional[Callable] = None,
         save_output_video: bool = False
     ) -> ProcessingJob:
-        """
-        Process complete video through pipeline.
-        
-        Args:
-            video_path: Path to input video
-            job_id: Unique job identifier
-            max_frames: Maximum frames to process (None = all)
-            progress_callback: Function called with progress updates
-            save_output_video: Whether to save annotated video
-        
-        Returns:
-            ProcessingJob with all results and statistics
-        """
+        """Process complete video through pipeline."""
         job = ProcessingJob(
             job_id=job_id,
             video_path=video_path,
             status="processing"
         )
         
-        # Initialize screenshot manager per job
         screenshot_manager = PlateScreenshotManager(
             output_dir=str(self.output_dir / job_id),
             perfect_quality_threshold=0.95,
@@ -210,12 +226,10 @@ class TrafficMonitorPipeline:
         )
         
         try:
-            # Open video
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
                 raise ValueError(f"Could not open video: {video_path}")
             
-            # Get video properties
             job.fps = int(cap.get(cv2.CAP_PROP_FPS))
             job.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             job.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -225,7 +239,6 @@ class TrafficMonitorPipeline:
             logger.info(f"Video info: {job.width}x{job.height} @ {job.fps}fps, "
                        f"{job.total_frames} frames ({job.duration_seconds:.1f}s)")
             
-            # Initialize speed estimator
             speed_estimator = SpeedEstimator(
                 frame_width_meters=self.frame_width_meters,
                 frame_height_meters=self.frame_height_meters,
@@ -236,13 +249,12 @@ class TrafficMonitorPipeline:
                 ignore_edge_frames=3,
                 min_distance_threshold=0.5,
                 speed_unit='kmh',
-                output_dir='.',  # ✅ Fixed - let SpeedEstimator handle its own path
+                output_dir='.',
                 outlier_rejection=True,
                 verbose=False
             )
             speed_estimator.set_frame_dimensions(job.width, job.height)
             
-            # Setup output video if requested
             out = None
             if save_output_video:
                 output_path = self.output_dir / job_id / "output.mp4"
@@ -251,12 +263,15 @@ class TrafficMonitorPipeline:
                 out = cv2.VideoWriter(str(output_path), fourcc, job.fps, 
                                      (job.width, job.height))
             
-            # Process frames
             frame_count = 0
             active_tracks = set()
             lost_tracks = set()
             
             max_frames_to_process = max_frames or job.total_frames
+            logger.info(
+                f"[{job_id}] Effective processing plan: max_frames={max_frames_to_process} "
+                f"| calibration: width={self.frame_width_meters}m, height={self.frame_height_meters}m"
+            )
             
             while frame_count < max_frames_to_process:
                 ret, frame = cap.read()
@@ -265,7 +280,6 @@ class TrafficMonitorPipeline:
                 
                 frame_count += 1
                 
-                # Process frame
                 frame_result = self._process_frame(
                     frame=frame,
                     frame_number=frame_count,
@@ -278,7 +292,6 @@ class TrafficMonitorPipeline:
                     lost_tracks=lost_tracks
                 )
                 
-                # Update job statistics
                 job.processed_frames = frame_count
                 job.total_detections += frame_result.detections_count
                 job.total_tracks = frame_result.active_tracks
@@ -287,7 +300,6 @@ class TrafficMonitorPipeline:
                 job.violations_count = frame_result.violations_count
                 job.frame_results.append(frame_result)
                 
-                # Prepare annotated frame for live preview (downstream WS encoding)
                 annotated_frame = self._draw_frame(
                     frame.copy(),
                     frame_result,
@@ -296,40 +308,33 @@ class TrafficMonitorPipeline:
                 )
                 frame_result.last_frame = annotated_frame
 
-                # Call progress callback (for WebSocket streaming)
                 if progress_callback:
                     progress_percentage = (frame_count / max_frames_to_process) * 100
                     progress_callback(job, frame_result, progress_percentage)
-                # Clear heavy data after callback to free memory
+                
                 frame_result.last_frame = None
                 
-                # Save output frame if requested
                 if out:
                     out.write(annotated_frame)
                 
-                # Log progress
                 if frame_count % 100 == 0:
                     logger.info(f"[{job_id}] Processed {frame_count}/{max_frames_to_process} "
                               f"| Tracks: {len(frame_result.tracks)} "
                               f"| Violations: {job.violations_count}")
             
-            # Finalize remaining tracks
             for track_id in active_tracks:
                 if track_id not in lost_tracks:
                     speed_estimator.finalize_track(track_id)
             
-            # Export speed data
             speed_data_filename = f"{job_id}_speed_data.json"
             speed_data_path = self.speed_output_dir / speed_data_filename
             speed_estimator.export_json(str(speed_data_path))
             job.speed_data_path = str(speed_data_path)
             
-            # Cleanup
             cap.release()
             if out:
                 out.release()
             
-            # Mark job as completed
             job.status = "completed"
             job.end_time = datetime.now()
             
@@ -354,21 +359,7 @@ class TrafficMonitorPipeline:
         job_id: str,
         max_frames: Optional[int] = None
     ) -> Generator[FrameResult, None, None]:
-        """
-        Stream processing results frame-by-frame (for WebSocket).
-        
-        This is a generator that yields results as they're processed.
-        Perfect for real-time dashboard updates.
-        
-        Args:
-            video_path: Path to video
-            job_id: Job identifier
-            max_frames: Max frames to process
-        
-        Yields:
-            FrameResult for each processed frame
-        """
-        # Initialize components
+        """Stream processing results frame-by-frame (for WebSocket)."""
         screenshot_manager = PlateScreenshotManager(
             output_dir=str(self.output_dir / job_id),
             perfect_quality_threshold=0.95,
@@ -386,7 +377,6 @@ class TrafficMonitorPipeline:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        # Initialize speed estimator
         speed_estimator = SpeedEstimator(
             frame_width_meters=self.frame_width_meters,
             frame_height_meters=self.frame_height_meters,
@@ -397,7 +387,7 @@ class TrafficMonitorPipeline:
             ignore_edge_frames=3,
             min_distance_threshold=0.5,
             speed_unit='kmh',
-            output_dir='.',  # ✅ Fixed - let SpeedEstimator handle its own path
+            output_dir='.',
             outlier_rejection=True,
             verbose=False
         )
@@ -416,7 +406,6 @@ class TrafficMonitorPipeline:
                 
                 frame_count += 1
                 
-                # Process and yield result
                 result = self._process_frame(
                     frame=frame,
                     frame_number=frame_count,
@@ -448,8 +437,7 @@ class TrafficMonitorPipeline:
     ) -> FrameResult:
         """
         Process single frame through complete pipeline.
-        
-        This is adapted from your test_full_pipeline logic.
+        Enhanced with smart screenshot optimization.
         """
         timestamp = frame_number / fps if fps > 0 else 0
         
@@ -459,14 +447,15 @@ class TrafficMonitorPipeline:
         # Step 2: Update tracker
         tracks = self.vehicle_tracker.update(detections, frame_number)
         
-        # Track active IDs
+        # Track active IDs and update speed (ALWAYS, regardless of violations)
         current_frame_tracks = set()
         for track in tracks:
             track_id = track['track_id']
             current_frame_tracks.add(track_id)
             active_tracks.add(track_id)
             
-            # Update speed estimator
+            # ENHANCEMENT 2: Always update speed estimator, even for violators
+            # This ensures continuous speed tracking throughout the vehicle's journey
             speed_estimator.update(
                 track_id=track_id,
                 bbox=track['bbox'],
@@ -484,15 +473,21 @@ class TrafficMonitorPipeline:
                 speed_estimator.finalize_track(track_id)
                 lost_tracks.add(track_id)
         
-        # Step 3: Process plates (every 3 frames to save resources)
+        # Step 3: SMART SCREENSHOT PROCESSING
         plate_detections_count = 0
         screenshots_saved_count = 0
+        skipped_tracks_count = 0  # For logging
         
         if self.plate_detector and frame_number % 3 == 0:
             for track in tracks:
                 track_id = track['track_id']
                 bbox = track['bbox']
                 class_name = track['class']
+                
+                # ENHANCEMENT 1: Check if we should skip this track
+                if not self._should_process_screenshot(track_id, screenshot_manager):
+                    skipped_tracks_count += 1
+                    continue  # Skip to next track - we already have good screenshots
                 
                 # Extract vehicle crop
                 x1, y1, x2, y2 = bbox
@@ -534,9 +529,15 @@ class TrafficMonitorPipeline:
                     
                     if was_saved:
                         screenshots_saved_count += 1
-
+            
+            # Log optimization stats periodically
+            if skipped_tracks_count > 0 and frame_number % 300 == 0:
+                logger.debug(
+                    f"Frame {frame_number}: Skipped screenshot processing for "
+                    f"{skipped_tracks_count} tracks (already have quality shots)"
+                )
         
-        # Get violations
+        # Get violations (speed estimator continues tracking even after violations)
         violations = speed_estimator.get_violations()
         
         # Create result
@@ -553,7 +554,7 @@ class TrafficMonitorPipeline:
             violations=violations
         )
         
-        # Draw annotated frame and JPEG-encode for lightweight transport
+        # Draw annotated frame and JPEG-encode
         annotated_frame = self._draw_frame(
             frame.copy(),
             result,
@@ -573,13 +574,16 @@ class TrafficMonitorPipeline:
         screenshot_manager: PlateScreenshotManager,
         speed_estimator: SpeedEstimator
     ):
-        """Draw tracks with info on frame (adapted from your code)."""
+        """
+        Draw tracks with info on frame.
+        Enhanced to show continuous speed even for violators.
+        """
         colors = {
             'car': (0, 255, 0),
             'bus': (255, 0, 0),
             'truck': (0, 255, 255),
             'motorcycle': (0, 0, 255),
-            'bicycle': (255, 0, 255)
+            'bicycle': (255, 255, 0)
         }
         
         for track in frame_result.tracks:
@@ -590,12 +594,12 @@ class TrafficMonitorPipeline:
             
             color = colors.get(class_name, (255, 255, 255))
             
-            # Check violation
-            is_violation = any(v['track_id'] == track_id 
-                             for v in frame_result.violations)
+            # Check if this track has violations
+            track_violations = [v for v in frame_result.violations if v['track_id'] == track_id]
+            is_violation = len(track_violations) > 0
             
             if is_violation:
-                color = (0, 0, 255)
+                color = (0, 0, 255)  # Red for violators
             
             thickness = 3 if is_violation else 2
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
@@ -606,17 +610,19 @@ class TrafficMonitorPipeline:
             if screenshots:
                 plate_info = f" | {len(screenshots)}P"
             
-            # Get speed info
+            # ENHANCEMENT 2: Always show current speed (even for violators)
             speed_info = ""
             current_speed = speed_estimator.get_current_speed(track_id)
             if current_speed is not None:
-                speed_info = f" | {current_speed:.0f}km/h"
                 if is_violation:
+                    # Show speed with warning indicator for violators
                     speed_info = f" | ⚠️{current_speed:.0f}km/h"
+                else:
+                    speed_info = f" | {current_speed:.0f}km/h"
             
             id_text = f"ID:{track_id}{plate_info}{speed_info}"
             
-            # Draw background
+            # Draw background for text
             (text_w, text_h), _ = cv2.getTextSize(id_text, 
                                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(frame, (x1, y1-text_h-40), 
@@ -626,7 +632,7 @@ class TrafficMonitorPipeline:
             cv2.putText(frame, id_text, (x1+5, y1-40),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
             
-            # Draw class
+            # Draw class label
             label = f"{class_name} {confidence:.2f}"
             (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
             cv2.rectangle(frame, (x1, y1-h-10), (x1+w, y1), color, -1)

@@ -122,6 +122,37 @@
         { "expr": "sum(rate(speed_violations_total[5m])) by (vehicle_class)", "legendFormat": "{{vehicle_class}}" }
       ],
       "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+
+    {
+      "type": "stat",
+      "title": "Active WebSocket connections",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 19 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(active_websocket_connections)", "legendFormat": "connections" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "colorMode": "value" }
+    },
+    {
+      "type": "stat",
+      "title": "Jobs processing (current)",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 19 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(jobs_processing_current)", "legendFormat": "processing" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "colorMode": "value" }
+    },
+    {
+      "type": "timeseries",
+      "title": "Jobs created / min",
+      "gridPos": { "h": 3, "w": 8, "x": 8, "y": 23 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(jobs_created_total[1m]))*60", "legendFormat": "created/min" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
     }
   ],
   "refresh": "10s",

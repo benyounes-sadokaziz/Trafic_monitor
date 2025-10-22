@@ -13,6 +13,7 @@ websockets>=12.0
 python-multipart>=0.0.6
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+aiofiles>=23.2.0
 
 # Task Queue
 celery>=5.3.0

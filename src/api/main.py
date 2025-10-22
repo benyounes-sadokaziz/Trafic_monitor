@@ -13,6 +13,7 @@ from pathlib import Path
 import uuid
 from datetime import datetime
 from typing import Optional
+import aiofiles
 
 from config.settings import settings
 from src.api.schemas import (
@@ -42,6 +43,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+# Constants
+DATA_URL_JPEG_PREFIX = "data:image/jpeg;base64,"
 
 # Add CORS middleware
 app.add_middleware(
@@ -149,9 +153,10 @@ async def process_video(
     input_path = settings.input_dir / f"{job_id}_{file.filename}"
     
     try:
-        with open(input_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        # Use async file IO to avoid blocking the event loop
+        content = await file.read()
+        async with aiofiles.open(input_path, "wb") as buffer:
+            await buffer.write(content)
         
         logger.info(f"Saved video to: {input_path}")
         
@@ -242,7 +247,6 @@ async def get_job_tracks(job_id: str):
     # Fallback: if a track has no plate_screenshot yet, scan the screenshots folder
     # Structure: settings.output_dir / job_id / f"{class}_{track_id}" / files like frame_XXXXXX_q0.95.jpg
     try:
-        from pathlib import Path
         import re
         import base64 as _b64
         root = Path(settings.output_dir) / job_id
@@ -259,7 +263,7 @@ async def get_job_tracks(job_id: str):
             best_file = None
             best_q = -1.0
             for img in track_dir.glob("*.jpg"):
-                m = re.search(r"_q([0-9]+\.[0-9]+)\.jpg$", img.name)
+                m = re.search(r"_q(\d+\.\d+)\.jpg$", img.name)
                 if not m:
                     continue
                 q = float(m.group(1))
@@ -268,8 +272,10 @@ async def get_job_tracks(job_id: str):
                     best_file = img
             if best_file is not None:
                 try:
-                    with open(best_file, "rb") as _f:
-                        data_url = "data:image/jpeg;base64," + _b64.b64encode(_f.read()).decode("ascii")
+                    # Async read best screenshot file
+                    async with aiofiles.open(best_file, "rb") as _f:
+                        data = await _f.read()
+                        data_url = DATA_URL_JPEG_PREFIX + _b64.b64encode(data).decode("ascii")
                     t["plate_screenshot"] = data_url
                     if "all_tracks" in job and isinstance(job["all_tracks"], dict) and tid in job["all_tracks"]:
                         job["all_tracks"][tid]["plate_screenshot"] = data_url
@@ -455,7 +461,7 @@ async def process_video_task(
                         if isinstance(shot, str) and _Path(shot).exists():
                             try:
                                 with open(shot, "rb") as _f:
-                                    shot_data = "data:image/jpeg;base64," + _b64.b64encode(_f.read()).decode("ascii")
+                                    shot_data = DATA_URL_JPEG_PREFIX + _b64.b64encode(_f.read()).decode("ascii")
                             except Exception:
                                 shot_data = None
                         latest.append({
@@ -490,7 +496,7 @@ async def process_video_task(
                             if p.exists():
                                 try:
                                     with open(p, "rb") as _f:
-                                        shot_data = "data:image/jpeg;base64," + _b64.b64encode(_f.read()).decode("ascii")
+                                        shot_data = DATA_URL_JPEG_PREFIX + _b64.b64encode(_f.read()).decode("ascii")
                                 except Exception:
                                     pass
                         # Initialize first appearance if not already set

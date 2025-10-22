@@ -137,7 +137,7 @@ def track_request(func):
         try:
             result = await func(*args, **kwargs)
             return result
-        except Exception as e:
+        except Exception:
             status = 500
             raise
         finally:
@@ -164,7 +164,6 @@ def track_processing_time(func):
     """Decorator to track job processing time."""
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        job_id = kwargs.get('job_id')
         start_time = time.time()
         
         prometheus_metrics.jobs_processing.inc()

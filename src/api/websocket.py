@@ -33,7 +33,7 @@ class ConnectionManager:
         try:
             prometheus_metrics.active_websocket_connections.inc()
         except Exception:
-            pass
+            logger.debug("Failed to increment websocket connection gauge", exc_info=True)
         logger.info(f"WebSocket connected for job {job_id}. "
                    f"Total connections: {len(self.active_connections[job_id])}")
     
@@ -48,7 +48,7 @@ class ConnectionManager:
         try:
             prometheus_metrics.active_websocket_connections.dec()
         except Exception:
-            pass
+            logger.debug("Failed to decrement websocket connection gauge", exc_info=True)
             
             logger.info(f"WebSocket disconnected for job {job_id}")
     

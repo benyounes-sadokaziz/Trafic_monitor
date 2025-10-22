@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Traffic Monitor – Interview Prep</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #121833;
+      --muted: #9fb0d6;
+      --text: #eef2ff;
+      --accent: #7c5cff;
+      --accent-2: #00d1b2;
+      --danger: #ff5c7c;
+      --warning: #ffb020;
+      --success: #2dd4bf;
+      --line: #232a4a;
+    }
+    @media print {
+      @page { size: A4; margin: 12mm; }
+      html, body { background: white; }
+      .page { box-shadow: none !important; }
+      .no-print-note { display: none; }
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      line-height: 1.45;
+    }
+    .wrapper { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+    .page { background: linear-gradient(180deg, #0e1430 0%, #0b1020 100%); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35); padding: 28px; }
+    h1 { font-size: 28px; margin: 0 0 12px; letter-spacing: 0.2px; }
+    h2 { font-size: 20px; margin: 22px 0 10px; color: var(--success); }
+    h3 { font-size: 16px; margin: 16px 0 8px; color: var(--accent-2); }
+    p { color: var(--muted); margin: 8px 0; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; background: #0f1533; color: #d7e4ff; border: 1px solid var(--line); border-radius: 8px; padding: 2px 6px; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #0f2333; color: #bfe9ff; border: 1px solid #1a3a52; margin-right: 6px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .card { grid-column: span 12; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); color: #cdd8ff; background: #0f1736; margin: 2px 4px 2px 0; font-size: 12px; }
+    .list { margin: 8px 0 0 16px; color: var(--muted); }
+    .list li { margin: 6px 0; }
+    .kbd { border: 1px solid var(--line); padding: 1px 6px; border-radius: 6px; background: #101735; }
+    .hr { height: 1px; background: var(--line); margin: 18px 0; }
+    .callout { border-left: 3px solid var(--accent); background: #0e1736; padding: 10px 12px; border-radius: 6px; }
+    .ok { border-left-color: var(--success); background: rgba(45,212,191,.08); }
+    .warn { border-left-color: var(--warning); background: rgba(255,176,32,.08); }
+    .bad { border-left-color: var(--danger); background: rgba(255,92,124,.08); }
+    .titlebar { display:flex; align-items:center; gap:10px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#ff5f57; box-shadow: 16px 0 0 #ffbd2e, 32px 0 0 #28c840; }
+    .section-title { display:flex; justify-content:space-between; align-items:center; }
+    .small { font-size: 12px; color: #a9b7e6; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="page">
+      <div class="titlebar"><div class="dot"></div><h1>Traffic Monitor – Interview Prep</h1></div>
+      <p class="small">Covers: quality_assessor.py, vehicle_detector.py, plate_detector.py, plate_screenshot_manager.py, orchestrator.py + YOLOv8 & ByteTrack internals.</p>
+      <div class="hr"></div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="section-title"><h2>PlateQualityAssessor (image_quality/quality_assessor.py)</h2><span class="pill">Metrics Fusion</span></div>
+          <p>Evaluates license plate crop quality using five normalized metrics and weighted fusion to decide if a crop is OCR-worthy.</p>
+          <h3>API</h3>
+          <ul class="list">
+            <li><code>QualityMetrics</code>: sharpness, brightness, contrast, size_score, aspect_ratio_score, overall_score, is_good_quality</li>
+            <li><code>assess(crop)</code>, <code>batch_assess(crops)</code>, <code>get_best_crop(crops)</code></li>
+          </ul>
+          <h3>Metrics</h3>
+          <ul class="list">
+            <li><b>Sharpness</b>: var(Laplacian(gray)) → <code>min(var / threshold, 1)</code></li>
+            <li><b>Brightness</b>: mean(gray) vs range → piecewise to [0–1]</li>
+            <li><b>Contrast</b>: std(gray) → <code>min(std / threshold, 1)</code></li>
+            <li><b>Size</b>: min(width/min_w, height/min_h, 1)</li>
+            <li><b>Aspect</b>: width/height vs [min,max] → clamped proximity score</li>
+          </ul>
+          <div class="callout ok"><b>Overall:</b> normalized weights sum to 1; overall_score = Σ w_i * metric_i; pass if ≥ overall_threshold.</div>
+          <h3>Edge cases & Tuning</h3>
+          <ul class="list">
+            <li>Empty crop → all zeros; height=0 → aspect 0</li>
+            <li>Raise min sizes, tighten aspect range per region; emphasize sharpness/contrast in weights</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>VehicleDetector (detection/vehicle_detector.py)</h2><span class="pill">YOLOv8</span></div>
+          <p>Runs YOLOv8 on frames filtered to vehicle classes and returns xyxy detections for tracking.</p>
+          <h3>Highlights</h3>
+          <ul class="list">
+            <li>Classes: {2 bicycle, 3 car, 4 motorcycle, 6 bus, 8 truck}</li>
+            <li>Device auto-select; single model instance reused</li>
+            <li>Output: <code>{bbox:(x1,y1,x2,y2), confidence, class, class_id}</code></li>
+          </ul>
+          <h3>Performance</h3>
+          <ul class="list">
+            <li>Use yolov8n for speed; adjust <code>conf</code>; keep GPU warm</li>
+            <li>Class filtering reduces compute and false positives</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>LicensePlateDetector (ocr/plate_detector.py)</h2><span class="pill">YOLOv8 (plates)</span></div>
+          <p>Detects plates within vehicle crops; supports batch inference; provides crop extraction and visualization.</p>
+          <h3>API</h3>
+          <ul class="list">
+            <li><code>detect(crop)</code> → best PlateDetection or None</li>
+            <li><code>detect_batch(crops)</code> → list[Optional[PlateDetection]]</li>
+            <li><code>extract_plate_crop(crop, det, padding=5)</code></li>
+          </ul>
+          <h3>Parsing & Filters</h3>
+          <ul class="list">
+            <li>conf / iou / imgsz / device passed to <code>model.predict</code></li>
+            <li>Filter by min area; sort by confidence; top-N</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>PlateScreenshotManager (ocr/plate_screenshot_manager.py)</h2><span class="pill">Curation</span></div>
+          <p>Selectively saves high-quality plate crops per track, enforces a cap on perfect-quality shots, and tracks stats.</p>
+          <h3>Logic</h3>
+          <ul class="list">
+            <li>Save if: score ≥ min_threshold AND (score ≥ perfect_threshold with limit not exceeded) OR (score &gt; quality_threshold)</li>
+            <li>File: <code>frame_XXXXXX_q0.92.jpg</code> with overlay “ID | CLASS”</li>
+            <li>Per-track: best_quality/best_screenshot/quality_threshold</li>
+          </ul>
+          <h3>Why</h3>
+          <ul class="list">
+            <li>Avoid disk bloat; ensure quality/dedup; keep a few perfect exemplars</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>TrafficMonitorPipeline (pipeline/orchestrator.py)</h2><span class="pill">End-to-end</span></div>
+          <p>Detect → Track → Speed → Plate → Quality → Save → Annotate/Stream. Skips plate work once enough HQ screenshots exist for a track.</p>
+          <h3>Per-frame</h3>
+          <ul class="list">
+            <li>YOLOv8 vehicles → ByteTrack update (ids)</li>
+            <li>SpeedEstimator (calibrated meters + fps, smoothed, outlier rejection)</li>
+            <li>Smart screenshots: skip if already have N shots ≥ threshold</li>
+            <li>Draw overlays, encode bytes for WebSocket</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>YOLOv8 – How it works</h2><span class="pill">One-stage detector</span></div>
+          <ul class="list">
+            <li><b>Backbone/Neck/Head</b>: CSP-inspired backbone, PAN/FPN neck, decoupled head</li>
+            <li><b>Anchor-free</b>: predicts boxes and classes per location</li>
+            <li><b>Losses</b>: CIoU (boxes), BCE (class/objectness)</li>
+            <li><b>Inference</b>: filter by conf; NMS on multi-scale outputs</li>
+            <li><b>Variants</b>: n/s/m/l/x; fp16/TensorRT for speed</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>ByteTrack – How it works</h2><span class="pill">Tracking-by-detection</span></div>
+          <ul class="list">
+            <li><b>Step 1</b>: Associate high-score detections to tracks (Hungarian + IoU; Kalman motion)</li>
+            <li><b>Step 2</b>: Recover with low-score detections for unmatched tracks</li>
+            <li><b>Update</b>: matched → correct; unmatched → age; spawn new from good detections</li>
+            <li><b>Strength</b>: robust IDs across occlusions/score dips with minimal overhead</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="section-title"><h2>Cheat Sheet</h2><span class="pill">Quick answers</span></div>
+          <ul class="list">
+            <li><b>Why skip screenshots?</b> OCR pipeline is expensive; after a few HQ samples, returns diminish.</li>
+            <li><b>Best quality signal?</b> Sharpness + contrast; size and aspect prevent false crops.</li>
+            <li><b>YOLOv8 tips?</b> Filter classes; adjust conf; use yolov8n + fp16 for real time.</li>
+            <li><b>ByteTrack tips?</b> Tune match_thresh/track_thresh/track_buffer to scene dynamics.</li>
+            <li><b>Speed</b>: calibrated meters + fps; smoothing and outlier rejection for stability.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="hr"></div>
+      <p class="no-print-note"><b>Export to PDF:</b> In your browser, press <span class="kbd">Ctrl</span>+<span class="kbd">P</span> (Windows), choose "Save as PDF", and enable "Background graphics" for colors.</p>
+    </div>
+  </div>
+</body>
+</html>

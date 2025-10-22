@@ -8,6 +8,7 @@ import asyncio
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict, Set
 from pathlib import Path
+from src.monitoring.metrics import prometheus_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,10 @@ class ConnectionManager:
             self.active_connections[job_id] = set()
         
         self.active_connections[job_id].add(websocket)
+        try:
+            prometheus_metrics.active_websocket_connections.inc()
+        except Exception:
+            pass
         logger.info(f"WebSocket connected for job {job_id}. "
                    f"Total connections: {len(self.active_connections[job_id])}")
     
@@ -40,6 +45,10 @@ class ConnectionManager:
             # Clean up empty sets
             if not self.active_connections[job_id]:
                 del self.active_connections[job_id]
+        try:
+            prometheus_metrics.active_websocket_connections.dec()
+        except Exception:
+            pass
             
             logger.info(f"WebSocket disconnected for job {job_id}")
     

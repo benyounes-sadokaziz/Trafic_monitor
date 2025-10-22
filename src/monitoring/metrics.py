@@ -66,6 +66,11 @@ class PrometheusMetrics:
             'frames_processed_total',
             'Total number of frames processed'
         )
+        self.frame_processing_seconds = Histogram(
+            'frame_processing_seconds',
+            'Per-frame total processing time in seconds',
+            buckets=[0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
+        )
         
         self.vehicles_detected = Counter(
             'vehicles_detected_total',

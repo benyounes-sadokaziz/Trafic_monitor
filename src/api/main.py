@@ -95,8 +95,8 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "redis": "connected",  # TODO: Check Redis connection
-        "storage": "available"  # TODO: Check storage availability
+        "redis": "connected",  
+        "storage": "available"  
     }
 
 
@@ -169,6 +169,12 @@ async def process_video(
         }
         
         jobs_storage[job_id] = job_data
+        # Metrics: a new job has been created
+        try:
+            from src.monitoring.metrics import prometheus_metrics
+            prometheus_metrics.jobs_created.inc()
+        except Exception:
+            pass
         
         # Add processing task to background
         background_tasks.add_task(

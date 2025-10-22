@@ -69,7 +69,7 @@ def render_monitor_section(api_base_url: str):
         st.caption(f"Job ID: `{job_id}`")
     
     with col2:
-        if st.button("🔄 Refresh Now", width='stretch):
+        if st.button("🔄 Refresh Now", use_container_width=True):
             st.rerun()
         
         auto_refresh = st.toggle("Auto-refresh", value=True)
@@ -184,7 +184,7 @@ def render_vehicle_table(api_client: APIClient, job_id: str):
     # We can use st.dataframe with column config for images if file path is provided
     st.dataframe(
         df,
-        width='stretch,
+        use_container_width=True,
         column_config={
             'plate_screenshot': st.column_config.ImageColumn(
                 label='plate_screenshot',
@@ -431,12 +431,12 @@ def display_charts(status_data: Dict[str, Any]):
     with col1:
         # Detection breakdown pie chart
         fig_pie = create_detection_breakdown_chart(stats)
-        st.plotly_chart(fig_pie, width='stretch)
+        st.plotly_chart(fig_pie, use_container_width=True)
     
     with col2:
         # Processing progress gauge
         fig_gauge = create_progress_gauge(status_data.get('progress', 0))
-        st.plotly_chart(fig_gauge, width='stretch)
+        st.plotly_chart(fig_gauge, use_container_width=True)
 
 
 def create_detection_breakdown_chart(stats: Dict[str, Any]) -> go.Figure:

@@ -1,43 +1,60 @@
-# Base image with CUDA support for GPU inference
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+# Prometheus configuration for Traffic Monitor
 
-# Set working directory
-WORKDIR /app
+global:
+  scrape_interval: 15s      # How often to scrape targets
+  evaluation_interval: 15s  # How often to evaluate rules
+  scrape_timeout: 10s       # Timeout for scraping
 
-# Environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
+  # Attach these labels to any time series or alerts
+  external_labels:
+    monitor: 'traffic-monitor'
+    environment: 'production'
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
-    python3-dev \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    wget \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+# Alerting configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+          # - 'alertmanager:9093'
 
-# Upgrade pip
-RUN pip3 install --upgrade pip setuptools wheel
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "alert_rules.yml"
 
-# Copy requirements
-COPY requirements.txt .
+# Scrape configurations
+scrape_configs:
+  # FastAPI Application Metrics
+  - job_name: 'traffic_monitor_api'
+    static_configs:
+      - targets: ['api:8000']
+        labels:
+          service: 'api'
+          component: 'backend'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
 
-# Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'
 
-# Copy application code
-COPY . .
+  # Redis Exporter (if you add it)
+  - job_name: 'redis'
+    static_configs:
+      - targets: []
+        # - 'redis-exporter:9121'
+        labels:
+          service: 'redis'
+          component: 'cache'
 
-# Create necessary directories
-RUN mkdir -p data/input data/output data/plates models/weights logs
-
-# Run Celery worker
-CMD ["celery", "-A", "src.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+  # PostgreSQL Exporter (if you add it)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: []
+        # - 'postgres-exporter:9187'
+        labels:
+          service: 'postgres'
+          component: 'database'

@@ -19,6 +19,14 @@ from src.ocr.plate_detector import LicensePlateDetector
 from src.image_quality.quality_assessor import PlateQualityAssessor
 from src.ocr.plate_screenshot_manager import PlateScreenshotManager
 from src.speed.speed_estimator import SpeedEstimator
+from src.monitoring.metrics import (
+    prometheus_metrics,
+    record_vehicle_detection,
+    record_plate_detection,
+    record_frame_processed,
+    record_screenshot_saved,
+    record_speed_violation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +167,10 @@ class TrafficMonitorPipeline:
             overall_threshold=quality_threshold
         )
         logger.info("✓ Quality assessor ready")
-        
+
+        # Metrics state (to avoid double-counting)
+        self._violations_counted = set()
+
         logger.info("✅ Pipeline initialized successfully")
     
     def _should_process_screenshot(
@@ -440,9 +451,26 @@ class TrafficMonitorPipeline:
         Enhanced with smart screenshot optimization.
         """
         timestamp = frame_number / fps if fps > 0 else 0
+        import time as _time
+        _frame_t0 = _time.time()
         
-        # Step 1: Detect vehicles
+        # Metrics: count processed frame
+        try:
+            record_frame_processed()
+        except Exception:
+            pass
+
+        # Step 1: Detect vehicles (time it for metrics)
+        _t0 = _time.time()
         detections = self.vehicle_detector.detect_vehicles(frame)
+        _dur = _time.time() - _t0
+        try:
+            prometheus_metrics.model_inference_duration.labels(model_type='vehicle').observe(_dur)
+            if detections:
+                avg_conf = sum(d.get('confidence', 0.0) for d in detections) / max(len(detections), 1)
+                record_vehicle_detection(len(detections), avg_conf)
+        except Exception:
+            pass
         
         # Step 2: Update tracker
         tracks = self.vehicle_tracker.update(detections, frame_number)
@@ -452,6 +480,12 @@ class TrafficMonitorPipeline:
         for track in tracks:
             track_id = track['track_id']
             current_frame_tracks.add(track_id)
+            # Count unique vehicles tracked
+            if track_id not in active_tracks:
+                try:
+                    prometheus_metrics.vehicles_tracked.inc()
+                except Exception:
+                    pass
             active_tracks.add(track_id)
             
             # ENHANCEMENT 2: Always update speed estimator, even for violators
@@ -502,11 +536,21 @@ class TrafficMonitorPipeline:
                 if vehicle_crop.size == 0:
                     continue
                 
-                # Detect plate
+                # Detect plate (time it for metrics)
+                _p0 = _time.time()
                 plate_detection = self.plate_detector.detect(vehicle_crop)
+                _pdur = _time.time() - _p0
+                try:
+                    prometheus_metrics.model_inference_duration.labels(model_type='plate').observe(_pdur)
+                except Exception:
+                    pass
                 
                 if plate_detection:
                     plate_detections_count += 1
+                    try:
+                        record_plate_detection(1, getattr(plate_detection, 'confidence', 0.0))
+                    except Exception:
+                        pass
                     
                     # Extract plate crop
                     plate_crop = self.plate_detector.extract_plate_crop(
@@ -529,6 +573,10 @@ class TrafficMonitorPipeline:
                     
                     if was_saved:
                         screenshots_saved_count += 1
+                        try:
+                            record_screenshot_saved()
+                        except Exception:
+                            pass
             
             # Log optimization stats periodically
             if skipped_tracks_count > 0 and frame_number % 300 == 0:
@@ -549,6 +597,13 @@ class TrafficMonitorPipeline:
             except Exception:
                 t['speed'] = None
             t['is_violation'] = bool(tid in violating_ids)
+            # Record violation once per track
+            if t['is_violation'] and tid not in self._violations_counted:
+                try:
+                    record_speed_violation(t.get('class', 'unknown'))
+                except Exception:
+                    pass
+                self._violations_counted.add(tid)
             # Best plate screenshot if available
             try:
                 best_path = screenshot_manager.get_best_screenshot(tid)
@@ -581,6 +636,12 @@ class TrafficMonitorPipeline:
         if success:
             result.frame_data = buf.tobytes()
         
+        # Observe total per-frame processing time
+        try:
+            prometheus_metrics.frame_processing_seconds.observe(_time.time() - _frame_t0)
+        except Exception:
+            pass
+
         return result
     
     def _draw_frame(

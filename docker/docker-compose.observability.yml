@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: traffic-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.local.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: traffic-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ../monitoring/grafana/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ../monitoring/grafana/dashboards/provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro
+
+volumes:
+  prometheus-data:
+  grafana-data:

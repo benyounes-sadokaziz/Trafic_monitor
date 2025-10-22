@@ -98,7 +98,7 @@ def render_upload_section(api_base_url: str):
         col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
         
         with col_btn1:
-            if st.button("🚀 Start Processing", type="primary", width='stretch):
+            if st.button("🚀 Start Processing", type="primary", use_container_width=True):
                 # Upload and process
                 with st.spinner("Uploading video to API..."):
                     result = upload_video_to_api(
@@ -128,7 +128,7 @@ def render_upload_section(api_base_url: str):
                     st.error("❌ Upload failed. Check API status.")
         
         with col_btn2:
-            if st.button("🔄 Clear", width='stretch):
+            if st.button("🔄 Clear", use_container_width=True):
                 st.rerun()
     
     else:

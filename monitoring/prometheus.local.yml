@@ -1,0 +1,51 @@
+# Prometheus configuration for local API (host) + containers
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    monitor: 'traffic-monitor'
+    environment: 'local'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # FastAPI Application Metrics (running on host)
+  - job_name: 'traffic_monitor_api'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+        labels:
+          service: 'api'
+          component: 'backend'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'
+
+  # Redis Exporter (optional)
+  - job_name: 'redis'
+    static_configs:
+      - targets: []
+        labels:
+          service: 'redis'
+          component: 'cache'
+
+  # PostgreSQL Exporter (optional)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: []
+        labels:
+          service: 'postgres'
+          component: 'database'

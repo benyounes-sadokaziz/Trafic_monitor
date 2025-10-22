@@ -1,0 +1,87 @@
+{
+  "calibration": {
+    "frame_width_meters": 100.0,
+    "frame_height_meters": 50.0,
+    "fps": 25,
+    "speed_unit": "kmh"
+  },
+  "speed_limits": {
+    "car": 120,
+    "truck": 90,
+    "bus": 90,
+    "motorcycle": 120,
+    "bicycle": 30
+  },
+  "statistics": {
+    "total_tracks": 3,
+    "tracks_with_speed": 2,
+    "total_violations": 3,
+    "violations_by_class": {
+      "car": 3
+    }
+  },
+  "tracks": [
+    {
+      "track_id": 1,
+      "vehicle_class": "car",
+      "avg_speed": 85.65,
+      "max_speed": 143.1,
+      "min_speed": 32.96,
+      "speed_unit": "kmh",
+      "num_measurements": 51,
+      "violation": true,
+      "finalized": true
+    },
+    {
+      "track_id": 2,
+      "vehicle_class": "car",
+      "avg_speed": 106.07,
+      "max_speed": 157.05,
+      "min_speed": 69.57,
+      "speed_unit": "kmh",
+      "num_measurements": 40,
+      "violation": true,
+      "finalized": true
+    },
+    {
+      "track_id": 3,
+      "vehicle_class": "car",
+      "avg_speed": null,
+      "max_speed": 175.61,
+      "min_speed": 48.56,
+      "speed_unit": "kmh",
+      "num_measurements": 44,
+      "violation": true,
+      "finalized": false
+    }
+  ],
+  "violations": [
+    {
+      "track_id": 1,
+      "vehicle_class": "car",
+      "speed": 120.31,
+      "speed_limit": 120,
+      "overspeed": 0.31,
+      "frame_id": 266,
+      "unit": "kmh"
+    },
+    {
+      "track_id": 2,
+      "vehicle_class": "car",
+      "speed": 120.99,
+      "speed_limit": 120,
+      "overspeed": 0.99,
+      "frame_id": 484,
+      "unit": "kmh"
+    },
+    {
+      "track_id": 3,
+      "vehicle_class": "car",
+      "speed": 120.65,
+      "speed_limit": 120,
+      "overspeed": 0.65,
+      "frame_id": 569,
+      "unit": "kmh"
+    }
+  ]
+}

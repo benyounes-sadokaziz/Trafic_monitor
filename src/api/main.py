@@ -119,25 +119,47 @@ async def metrics():
 async def process_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    frame_width_meters: float = Form(50.0),
-    frame_height_meters: float = Form(30.0),
     max_frames: Optional[int] = Form(None),
-    save_output_video: bool = Form(False)
+    save_output_video: bool = Form(False),
+    speed_limits: Optional[str] = Form(None)
 ):
     """
     Upload and process a video file.
     
     Args:
         file: Video file to process (MP4, AVI, MOV)
-        frame_width_meters: Real-world width camera sees (for speed estimation)
-        frame_height_meters: Real-world height camera sees
         max_frames: Maximum frames to process (None = all frames)
         save_output_video: Whether to save annotated output video
+        speed_limits: JSON string with speed limits per vehicle type
+                     e.g., '{"car": 120, "truck": 90, "bus": 90, "motorcycle": 120, "bicycle": 30}'
     
     Returns:
         JobResponse with job_id and status
+        
+    Note:
+        Speed estimation now uses homography calibration (hardcoded reference points)
+        instead of frame dimensions. Calibration is done in the pipeline initialization.
     """
     logger.info(f"Received video upload: {file.filename}")
+    
+    # Validate file type
+    if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Supported: MP4, AVI, MOV"
+        )
+    
+    # Parse speed limits if provided
+    speed_limits_dict = None
+    if speed_limits:
+        try:
+            speed_limits_dict = json.loads(speed_limits)
+            logger.info(f"Custom speed limits: {speed_limits_dict}")
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid speed_limits format. Must be valid JSON."
+            )
     
     # Validate file type
     if not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
@@ -167,10 +189,9 @@ async def process_video(
             "status": "queued",
             "created_at": datetime.now().isoformat(),
             "video_path": str(input_path),
-            "frame_width_meters": frame_width_meters,
-            "frame_height_meters": frame_height_meters,
             "max_frames": max_frames,
-            "save_output_video": save_output_video
+            "save_output_video": save_output_video,
+            "speed_limits": speed_limits_dict
         }
         
         jobs_storage[job_id] = job_data
@@ -186,10 +207,9 @@ async def process_video(
             process_video_task,
             job_id=job_id,
             video_path=input_path,
-            frame_width_meters=frame_width_meters,
-            frame_height_meters=frame_height_meters,
             max_frames=max_frames,
-            save_output_video=save_output_video
+            save_output_video=save_output_video,
+            speed_limits=speed_limits_dict
         )
         
         logger.info(f"✅ Job {job_id} queued for processing")
@@ -235,6 +255,23 @@ async def get_job_status(job_id: str):
 @app.get("/api/jobs/{job_id}/tracks")
 async def get_job_tracks(job_id: str):
     """Return the latest known tracks with speed/violation/screenshot info."""
+    import numpy as np
+    
+    def sanitize_for_json(obj):
+        """Recursively convert numpy types to native Python types."""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: sanitize_for_json(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [sanitize_for_json(item) for item in obj]
+        else:
+            return obj
+    
     if job_id not in jobs_storage:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     job = jobs_storage[job_id]
@@ -290,6 +327,10 @@ async def get_job_tracks(job_id: str):
         t.setdefault("first_ts", None)
         t.setdefault("last_frame", None)
         t.setdefault("last_ts", None)
+    
+    # Sanitize all tracks to remove numpy types before JSON serialization
+    tracks = sanitize_for_json(tracks)
+    
     return {"tracks": tracks}
 
 
@@ -399,10 +440,9 @@ async def websocket_route(websocket: WebSocket, job_id: str):
 async def process_video_task(
     job_id: str,
     video_path: Path,
-    frame_width_meters: float,
-    frame_height_meters: float,
     max_frames: Optional[int],
-    save_output_video: bool
+    save_output_video: bool,
+    speed_limits: Optional[dict] = None
 ):
     """Background task to process video through pipeline."""
     from src.pipeline.orchestrator import TrafficMonitorPipeline
@@ -412,8 +452,8 @@ async def process_video_task(
     
     logger.info(
         f"Starting processing for job {job_id} | "
-        f"calibration: width={frame_width_meters}m, height={frame_height_meters}m | "
-        f"max_frames={max_frames} | save_output_video={save_output_video}"
+        f"max_frames={max_frames} | save_output_video={save_output_video} | "
+        f"speed_limits={speed_limits}"
     )
     
     jobs_storage[job_id]["status"] = "processing"
@@ -425,14 +465,21 @@ async def process_video_task(
     def run_pipeline():
         """Run pipeline in separate thread."""
         try:
-            pipeline = TrafficMonitorPipeline(
-                vehicle_model_path=str(settings.yolo_vehicle_model),
-                plate_model_path=str(settings.yolo_plate_model),
-                output_dir=str(settings.output_dir),
-                speed_output_dir=str(settings.output_dir / "speed_data"),
-                frame_width_meters=frame_width_meters,
-                frame_height_meters=frame_height_meters
-            )
+            # Prepare pipeline initialization parameters
+            pipeline_params = {
+                "vehicle_model_path": str(settings.yolo_vehicle_model),
+                "plate_model_path": str(settings.yolo_plate_model),
+                "output_dir": str(settings.output_dir),
+                "speed_output_dir": str(settings.output_dir / "speed_data")
+                # Homography calibration uses default hardcoded reference points
+                # defined in orchestrator.py __init__
+            }
+            
+            # Add speed_limits if provided
+            if speed_limits is not None:
+                pipeline_params["speed_limits"] = speed_limits
+            
+            pipeline = TrafficMonitorPipeline(**pipeline_params)
             
             # Progress callback with WebSocket support
             def progress_callback(job, frame_result, progress_percentage):

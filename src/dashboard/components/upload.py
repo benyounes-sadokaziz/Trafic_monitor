@@ -50,24 +50,24 @@ def render_upload_section(api_base_url: str):
     with col2:
         st.markdown("### ⚙️ Processing Parameters")
         
-        # Camera calibration parameters
-        frame_width = st.number_input(
-            "Frame Width (meters)",
-            min_value=1.0,
-            max_value=1000.0,
-            value=50.0,
-            step=1.0,
-            help="Real-world width that the camera sees"
+        # Info about homography calibration
+        st.info(
+            "📐 **Speed Calibration:** Uses homography transformation with "
+            "hardcoded reference points for accurate real-world measurements."
         )
         
-        frame_height = st.number_input(
-            "Frame Height (meters)",
-            min_value=1.0,
-            max_value=1000.0,
-            value=30.0,
-            step=1.0,
-            help="Real-world height that the camera sees"
-        )
+        # Speed limits configuration
+        st.markdown("#### 🚗 Speed Limits (km/h)")
+        
+        col_speed1, col_speed2 = st.columns(2)
+        with col_speed1:
+            car_limit = st.number_input("Car", min_value=10, max_value=300, value=120, step=5)
+            truck_limit = st.number_input("Truck", min_value=10, max_value=200, value=90, step=5)
+            motorcycle_limit = st.number_input("Motorcycle", min_value=10, max_value=300, value=120, step=5)
+        
+        with col_speed2:
+            bus_limit = st.number_input("Bus", min_value=10, max_value=200, value=90, step=5)
+            bicycle_limit = st.number_input("Bicycle", min_value=10, max_value=100, value=30, step=5)
         
         # Optional: Max frames to process
         process_all = st.checkbox("Process entire video", value=True)
@@ -99,15 +99,23 @@ def render_upload_section(api_base_url: str):
         
         with col_btn1:
             if st.button("🚀 Start Processing", type="primary", use_container_width=True):
+                # Prepare speed limits
+                speed_limits = {
+                    'car': car_limit,
+                    'truck': truck_limit,
+                    'bus': bus_limit,
+                    'motorcycle': motorcycle_limit,
+                    'bicycle': bicycle_limit
+                }
+                
                 # Upload and process
                 with st.spinner("Uploading video to API..."):
                     result = upload_video_to_api(
                         api_base_url=api_base_url,
                         video_file=uploaded_file,
-                        frame_width_meters=frame_width,
-                        frame_height_meters=frame_height,
                         max_frames=max_frames,
-                        save_output_video=save_output
+                        save_output_video=save_output,
+                        speed_limits=speed_limits
                     )
                 
                 if result:
@@ -138,10 +146,9 @@ def render_upload_section(api_base_url: str):
 def upload_video_to_api(
     api_base_url: str,
     video_file,
-    frame_width_meters: float,
-    frame_height_meters: float,
     max_frames: int = None,
-    save_output_video: bool = False
+    save_output_video: bool = False,
+    speed_limits: dict = None
 ) -> dict:
     """
     Upload video file to FastAPI backend.
@@ -149,13 +156,15 @@ def upload_video_to_api(
     Args:
         api_base_url: Base URL of API
         video_file: Uploaded file object from Streamlit
-        frame_width_meters: Camera calibration width
-        frame_height_meters: Camera calibration height
         max_frames: Optional max frames to process
         save_output_video: Whether to save annotated output
+        speed_limits: Dictionary with speed limits for each vehicle type
     
     Returns:
         dict: API response with job_id and status
+        
+    Note:
+        Speed calibration now uses homography (backend handles it automatically).
     """
     try:
         # Prepare the file for upload
@@ -165,13 +174,16 @@ def upload_video_to_api(
         
         # Prepare form data
         data = {
-            'frame_width_meters': frame_width_meters,
-            'frame_height_meters': frame_height_meters,
             'save_output_video': save_output_video
         }
         
         if max_frames is not None:
             data['max_frames'] = max_frames
+        
+        # Add speed limits as JSON string
+        if speed_limits is not None:
+            import json
+            data['speed_limits'] = json.dumps(speed_limits)
         
         # Make API request
         response = requests.post(

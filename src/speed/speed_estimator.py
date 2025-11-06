@@ -1,7 +1,7 @@
 """
 Vehicle Speed Estimator
 
-Estimates vehicle speeds using pixel-based tracking with real-world calibration.
+Estimates vehicle speeds using pixel-based tracking with homography calibration.
 Features:
 - Per-track speed calculation (instantaneous, average, min, max)
 - Speed violation detection with configurable limits per vehicle class
@@ -14,17 +14,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 from collections import defaultdict, deque
+import cv2
 
 
 class SpeedEstimator:
     """
-    Estimates vehicle speeds from tracked bounding boxes with real-world calibration.
+    Estimates vehicle speeds from tracked bounding boxes with homography calibration.
     """
     
     def __init__(
         self,
-        frame_width_meters: float,
-        frame_height_meters: float,
+        homography_matrix: np.ndarray,
         fps: int,
         speed_limits: Dict[str, float],
         min_frames_for_speed: int = 10,
@@ -40,8 +40,7 @@ class SpeedEstimator:
         Initialize the speed estimator.
         
         Args:
-            frame_width_meters: Real-world width that camera sees (meters)
-            frame_height_meters: Real-world height that camera sees (meters)
+            homography_matrix: 3x3 homography matrix for pixel-to-meter transformation
             fps: Video frames per second
             speed_limits: Speed limits per vehicle class, e.g., {'car': 120, 'truck': 90}
             min_frames_for_speed: Minimum frames tracked before calculating speed
@@ -53,8 +52,7 @@ class SpeedEstimator:
             outlier_rejection: Enable outlier rejection (remove extreme speeds)
             verbose: Print detailed logging
         """
-        self.frame_width_meters = frame_width_meters
-        self.frame_height_meters = frame_height_meters
+        self.H = homography_matrix
         self.fps = fps
         self.speed_limits = speed_limits
         self.min_frames_for_speed = min_frames_for_speed
@@ -66,12 +64,6 @@ class SpeedEstimator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.outlier_rejection = outlier_rejection
         self.verbose = verbose
-        
-        # Pixel to meter conversion (will be set after first frame)
-        self.pixels_per_meter_x = None
-        self.pixels_per_meter_y = None
-        self.frame_width_pixels = None
-        self.frame_height_pixels = None
         
         # Track data: {track_id: TrackData}
         self.tracks: Dict[int, Dict] = {}
@@ -89,30 +81,28 @@ class SpeedEstimator:
         
         if self.verbose:
             print(f"\n{'='*70}")
-            print("SPEED ESTIMATOR INITIALIZED")
+            print("SPEED ESTIMATOR INITIALIZED (HOMOGRAPHY MODE)")
             print(f"{'='*70}")
-            print(f"Calibration: {frame_width_meters}m × {frame_height_meters}m")
+            print(f"Homography matrix shape: {self.H.shape}")
             print(f"FPS: {fps}")
             print(f"Speed unit: {speed_unit.upper()}")
             print(f"Speed limits: {speed_limits}")
             print(f"{'='*70}\n")
     
-    def set_frame_dimensions(self, frame_width_pixels: int, frame_height_pixels: int):
+    def _pixel_to_meters(self, pixel_x: float, pixel_y: float) -> Tuple[float, float]:
         """
-        Set frame dimensions and calculate pixel-to-meter conversion ratios.
-        Should be called once with the first frame dimensions.
+        Convert pixel coordinates to real-world meters using homography.
+        
+        Args:
+            pixel_x: X coordinate in pixels
+            pixel_y: Y coordinate in pixels
+            
+        Returns:
+            Tuple of (x_meters, y_meters)
         """
-        self.frame_width_pixels = frame_width_pixels
-        self.frame_height_pixels = frame_height_pixels
-        
-        # Calculate pixels per meter
-        self.pixels_per_meter_x = frame_width_pixels / self.frame_width_meters
-        self.pixels_per_meter_y = frame_height_pixels / self.frame_height_meters
-        
-        if self.verbose:
-            print(f"Frame calibrated: {frame_width_pixels}×{frame_height_pixels} pixels")
-            print(f"Conversion: {self.pixels_per_meter_x:.2f} px/m (X), "
-                  f"{self.pixels_per_meter_y:.2f} px/m (Y)\n")
+        pixel_point = np.array([[[pixel_x, pixel_y]]], dtype=np.float32)
+        real_world = cv2.perspectiveTransform(pixel_point, self.H)
+        return real_world[0][0][0], real_world[0][0][1]
     
     def update(
         self,
@@ -132,11 +122,6 @@ class SpeedEstimator:
             frame_id: Current frame number
             confidence: Detection confidence (optional)
         """
-        # Initialize frame dimensions if not set
-        if self.pixels_per_meter_x is None:
-            # Can't calculate without frame dimensions
-            return
-        
         # Initialize track if new
         if track_id not in self.tracks:
             self._initialize_track(track_id, class_name)
@@ -149,11 +134,16 @@ class SpeedEstimator:
         center_x = (x1 + x2) / 2
         center_y = (y1 + y2) / 2
         
+        # Convert to real-world coordinates
+        x_meters, y_meters = self._pixel_to_meters(center_x, center_y)
+        
         # Store position data
         position = {
             'frame_id': frame_id,
-            'center_x': center_x,
-            'center_y': center_y,
+            'center_x_pixels': center_x,
+            'center_y_pixels': center_y,
+            'x_meters': x_meters,
+            'y_meters': y_meters,
             'confidence': confidence
         }
         track['positions'].append(position)
@@ -202,13 +192,9 @@ class SpeedEstimator:
         start_pos = recent_positions[0]
         end_pos = recent_positions[-1]
         
-        # Pixel displacement
-        dx_pixels = end_pos['center_x'] - start_pos['center_x']
-        dy_pixels = end_pos['center_y'] - start_pos['center_y']
-        
-        # Convert to meters
-        dx_meters = dx_pixels / self.pixels_per_meter_x
-        dy_meters = dy_pixels / self.pixels_per_meter_y
+        # Displacement in meters (already converted by homography)
+        dx_meters = end_pos['x_meters'] - start_pos['x_meters']
+        dy_meters = end_pos['y_meters'] - start_pos['y_meters']
         
         # Total distance (Euclidean)
         distance_meters = np.sqrt(dx_meters**2 + dy_meters**2)
@@ -235,11 +221,16 @@ class SpeedEstimator:
         else:
             speed = speed_ms
         
-        # Outlier rejection
-        if self.outlier_rejection and len(track['speeds']) > 0:
-            # Reject if speed is more than 3x the median
+        # STRICT outlier rejection - always reject unrealistic speeds
+        # Maximum realistic highway speed: 200 km/h
+        if speed > 200:
+            return None
+        
+        # Additional outlier rejection based on track history
+        if self.outlier_rejection and len(track['speeds']) >= 3:
+            # Reject if speed is more than 2x the median (stricter than 3x)
             median_speed = np.median(track['speeds'])
-            if speed > median_speed * 3 or speed > 300:  # Also reject unrealistic speeds
+            if speed > median_speed * 2.0:
                 return None
         
         return speed
@@ -357,17 +348,32 @@ class SpeedEstimator:
         """
         filepath = self.output_dir / filename
         
+        # Helper to convert numpy types to native Python types
+        def convert_numpy(obj):
+            """Recursively convert numpy types to Python native types."""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_numpy(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(item) for item in obj]
+            else:
+                return obj
+        
         data = {
             'calibration': {
-                'frame_width_meters': self.frame_width_meters,
-                'frame_height_meters': self.frame_height_meters,
-                'fps': self.fps,
+                'homography_matrix': self.H.tolist(),
+                'fps': int(self.fps),
                 'speed_unit': self.speed_unit
             },
             'speed_limits': self.speed_limits,
-            'statistics': self.stats,
-            'tracks': self.get_all_track_summaries(),
-            'violations': self.violations
+            'statistics': convert_numpy(self.stats),
+            'tracks': convert_numpy(self.get_all_track_summaries()),
+            'violations': convert_numpy(self.violations)
         }
         
         with open(filepath, 'w') as f:
@@ -431,5 +437,3 @@ class SpeedEstimator:
             'violation_logged': False,
             'finalized': False
         }
-
-

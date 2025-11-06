@@ -1,5 +1,15 @@
-./data
+# Data directories (ignore input/output files but keep folder structure)
+data/input/*
+!data/input/.gitkeep
+data/output/*
+!data/output/.gitkeep
+
+# Environment and secrets
 /.env
+
+# Model files
 /models
+
+# Test files
 /test_api.py
 TO_DO_LIST.md

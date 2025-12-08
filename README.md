@@ -23,37 +23,31 @@ A production-ready traffic monitoring system that uses deep learning for real-ti
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       Streamlit Dashboard                        │
-│  (Upload • Monitor • Visualize • History)                       │
-└────────────────────┬────────────────────────────────────────────┘
-                     │ HTTP/WebSocket
-┌────────────────────▼────────────────────────────────────────────┐
-│                        FastAPI Backend                           │
-│  • REST API Endpoints                                           │
-│  • WebSocket Manager                                            │
-│  • Background Task Processing                                   │
-└────────────────────┬────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────────┐
-│                   Traffic Monitor Pipeline                       │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │   YOLOv8     │→│  ByteTrack   │→│ Homography   │         │
-│  │   Detector   │  │   Tracker    │  │Speed Estimator│         │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │
-│         │                 │                  │                  │
-│  ┌──────▼──────┐   ┌──────▼──────┐   ┌──────▼──────┐         │
-│  │ Plate OCR   │   │Quality Check│   │  Violation  │         │
-│  │  Detection  │   │ & Screenshot│   │   Checker   │         │
-│  └─────────────┘   └─────────────┘   └─────────────┘         │
-└───────────────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────────┐
-│          Prometheus Metrics + Grafana Dashboards                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+![Traffic Monitor Architecture](docs/architecture.png)
+
+### System Components
+
+**Frontend Layer:**
+- **Streamlit Dashboard**: User interface for video upload, real-time monitoring, results visualization, and job history
+
+**API Layer:**
+- **FastAPI Backend**: REST API endpoints, WebSocket manager for live updates, and background task processor
+
+**Processing Pipeline:**
+1. **YOLOv8 Vehicle Detector**: Detects vehicles and returns bounding boxes
+2. **ByteTrack Tracker**: Assigns unique IDs and tracks vehicles across frames
+3. **YOLOv8 Plate Detector**: Detects license plates within vehicle crops (parallel processing)
+4. **Quality Assessor**: Evaluates plate image quality (sharpness, brightness, size)
+5. **Smart Screenshot Storage**: Saves only the best quality plate images per vehicle
+6. **Homography Speed Estimator**: Calculates real-world speeds using 9-point calibration
+7. **Speed Checker**: Detects violations based on configurable limits per vehicle type
+
+**Monitoring Layer:**
+- **Prometheus**: Metrics collection (frame latency, detection rates, violations)
+- **Grafana**: Real-time dashboards and visualization
+
+**Storage:**
+- Input videos, processed screenshots, speed data (JSON), violation logs
 
 ## 🚀 Quick Start
 

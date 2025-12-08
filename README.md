@@ -24,7 +24,7 @@ A production-ready traffic monitoring system that uses deep learning for real-ti
 ## 🏗️ Architecture
 
 <p align="center">
-  <img src="docs/architecture.png" alt="Traffic Monitor Architecture" width="70%">
+  <img src="docs/architecture.png" alt="Traffic Monitor Architecture" width="45%">
 </p>
 
 ### System Components
